@@ -129,10 +129,13 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
       description: [
         "Get the current voice input state. PRIMARY tool for speech input.",
         "Buffer is always being populated — call this each turn.",
-        "Returns: text (full accumulated text since last checkpoint),",
-        "deadEvents (consecutive empty events), charsSinceCheckpoint.",
-        "Analyze the text semantically. When it contains a complete",
-        "actionable request, call voice_cut_checkpoint to claim it.",
+        "Returns: text (accumulated text since last checkpoint),",
+        "deadEvents (consecutive empty events),",
+        "textEvents (consecutive text-bearing events),",
+        "charsSinceCheckpoint.",
+        "The plugin autonomously injects [Voice]: messages into context",
+        "and triggers LLM turns. Use this tool for detailed analysis",
+        "and voice_cut_checkpoint to claim actionable text.",
       ].join(" "),
       args: {},
       async execute() {
@@ -205,11 +208,12 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
           const s = earsay.isRunning ? await earsay.status() : null
           return JSON.stringify({
             server: s ?? { status: earsay.isRunning ? "starting" : "stopped" },
-            buffer: {
-              currentTextLength: buffer.allText().length,
-              hasUnread: buffer.hasUnread(),
-              deadEvents: buffer.getProgressive().deadEvents,
-            },
+          buffer: {
+            currentTextLength: buffer.allText().length,
+            hasUnread: buffer.hasUnread(),
+            deadEvents: buffer.getProgressive().deadEvents,
+            textEvents: buffer.getProgressive().textEvents,
+          },
             sseConnected: sse.isConnected,
           })
         } catch (err) {

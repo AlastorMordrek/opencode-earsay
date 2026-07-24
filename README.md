@@ -2,7 +2,7 @@
 
 OpenCode plugin for always-on continuous voice input via [EarSay](https://github.com/AlastorMordrek/earsay).
 
-Install once. Restart opencode. Speak. Text flows into the buffer. The LLM analyzes it each turn, semantically identifies actionable requests, and cuts checkpoints at natural boundaries.
+Install once. Restart opencode. Speak. The plugin injects growing voice text into session context as `[Voice]:` messages. After 3 text events or 3 silence events, it triggers an LLM turn. The LLM analyzes the accumulated text and decides whether to act.
 
 ## How It Works
 
@@ -11,18 +11,25 @@ Install once. Restart opencode. Speak. Text flows into the buffer. The LLM analy
                 │  faster-whisper · VAD · HTTP API · SSE streaming │
                 │  github.com/AlastorMordrek/earsay                 │
                 └────────────────────────┬─────────────────────────┘
-                                         │ SSE (fullchunk, 3s timeout)
+                                         │ SSE (delta mode, 30 chars / 3s timeout)
                                          ▼
 Plugin loads ─→ auto-installs EarSay (pipx) ─→ auto-starts server ─→ subscribes to SSE
                                                                        │
-                                                  Each turn: LLM calls │
-                                                  voice_get_progressive←┘
-                                                  → analyzes text semantically
-                                                  → voice_cut_checkpoint(boundary)
-                                                  → acts on consumed text
+                                      ┌────────────────────────────────┘
+                                      ▼
+                    ContextInjector (tick every 1s)
+                      ├─ text event → inject [Voice]: $delta as noReply
+                      ├─ 3 text events → trigger LLM turn
+                      └─ 3 silence events after speech → trigger LLM turn
+                                                                       │
+                                                                       ▼
+                    LLM sees [Voice]: messages in context
+                    → analyzes semantically
+                    → voice_cut_checkpoint(boundary) to claim
+                    → acts on consumed text
 ```
 
-EarSay is the dependency. This plugin wires it into OpenCode with 11 tools and automatic lifecycle management.
+EarSay is the dependency. This plugin wires it into OpenCode with 11 tools and automatic context injection.
 
 ## Prerequisites
 
@@ -51,6 +58,9 @@ Just speak. The LLM sees your speech in `voice_get_progressive`.
 
 **To stop listening:** "stop listening" → `voice_pause` (mic released, events freeze).
 **To resume:** type a resume command (mic was paused, can't speak to resume).
+
+The plugin autonomously injects `[Voice]:` messages into the session context
+and triggers LLM turns at the right moments — no manual commands needed.
 
 ## Tools
 

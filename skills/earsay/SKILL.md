@@ -2,9 +2,9 @@
 name: earsay-voice
 description: >
   Voice input via earsay — always-on continuous speech-to-text. The plugin
-  auto-starts the server and SSE stream on load. Text accumulates in a buffer
-  that the LLM analyzes each turn. The LLM decides when to ACT, not when to
-  listen.
+  auto-starts, auto-injects growing voice text into session context, and
+  triggers an LLM turn after 3 text events or 3 silence events. The LLM
+  analyzes the accumulated [Voice]: messages and decides whether to act.
 ---
 
 # Earsay Voice Input
@@ -12,57 +12,71 @@ description: >
 ## Automatic Behavior
 
 On plugin load:
-1. earsay is auto-installed via pip if missing (unless `EARSAY_AUTO_INSTALL=false`)
-2. earsay server auto-starts on port 3009 (unless `EARSAY_AUTO_START=false`)
-3. SSE subscription (fullchunk, 3s timeout) begins immediately
-4. Transcribed text flows into the buffer continuously
+1. earsay auto-installed if missing (pipx → pip3 → pip)
+2. earsay server auto-starts on port 3009
+3. SSE subscription (delta mode, 30 chars / 3s timeout) begins immediately
+4. `[Voice]:` text is injected into session context as `noReply` messages
+5. After 3 text events (~9s speech) or 3 silence events (~9s pause after speech),
+   a trigger prompt is sent to the LLM
 
-**The LLM does NOT decide when to listen. It's always listening.**
+## What the LLM Sees
 
-## Available Tools
+On a triggered turn, the conversation history contains:
+
+```
+User [Voice]: create a new api 
+User [Voice]:  endpoint for users 
+User [Voice]:  with jwt auth
+User:     ← trigger prompt (empty string)
+```
+
+The `[Voice]:` prefix distinguishes speech input from typed messages.
+The LLM should analyze these messages semantically and decide:
+- Is there a complete actionable request? → call `voice_cut_checkpoint`
+- Is more context needed? → respond with "waiting for more input"
+- Multiple requests chained? → cut one at a time
+
+## Cutting
+
+When you identify a complete request, claim it:
+
+```
+voice_cut_checkpoint(charPosition)
+```
+
+This consumes the first N chars of the accumulated text. The consumed portion
+becomes your actionable prompt. Remaining text stays for the next trigger.
+
+## Example
+
+Turn triggered after 3 text events:
+
+```
+User [Voice]: refactor the auth module 
+User [Voice]:  to use JWT tokens 
+User [Voice]:  with role-based access
+User:     ← trigger
+```
+
+LLM reads: "refactor the auth module to use JWT tokens with role-based access"
+LLM analyzes: complete request at char 47 ("refactor the auth module to use JWT tokens")
+LLM calls: `voice_cut_checkpoint(47)`
+LLM acts on: "refactor the auth module to use JWT tokens"
+Remaining: " with role-based access" → stays for next turn
+
+## Pause
+
+User says "stop listening" → call `voice_pause`. Events freeze.
+User must TYPE to resume — do NOT call `voice_resume` autonomously.
+
+## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `voice_get_progressive` | **PRIMARY** — get `{ text, deadEvents }`, analyze semantically |
-| `voice_cut_checkpoint(N)` | Claim first N chars as a completed actionable prompt |
-| `voice_clear_checkpoint` | Undo last cut, re-analyze |
-| `voice_consume_all` | Consume all text at once (clean slate) |
-| `voice_subscribe` | Reconnect SSE if disconnected |
-| `voice_unsubscribe` | Stop buffer updates (SSE stays running) |
-| `voice_pause` | Pause mic + freeze events (user must type to resume) |
-| `voice_resume` | Resume mic (only when user types it) |
-| `voice_start` | Start server (auto-started, use if crashed) |
-| `voice_stop` | Kill server entirely |
+| `voice_get_progressive` | Get current accumulated text + counters |
+| `voice_cut_checkpoint(N)` | Claim first N chars as actionable |
+| `voice_clear_checkpoint` | Undo last cut |
+| `voice_consume_all` | Consume all text at once |
+| `voice_pause` / `voice_resume` | Mic control |
+| `voice_start` / `voice_stop` | Server lifecycle |
 | `voice_status` | Server + buffer state |
-
-## Pattern
-
-### Each Turn
-
-Call `voice_get_progressive`. Analyze the `text` field semantically:
-
-- **Empty text** → no speech yet, or all previous text was consumed. Continue current work.
-- **Growing text** → read it. Look for complete actionable requests.
-  - If you find one, identify WHERE it ends (character boundary).
-  - If more relevant detail is still arriving (constraints, preferences, specs), wait.
-  - If the user moved to other topics, the first request is complete as-is.
-- **deadEvents > 0** → user paused. Signal, not a gate. Semantic boundaries outweigh silence.
-
-### Cutting
-
-```
-voice_cut_checkpoint(boundaryChar)
-```
-
-This splits the buffer at your chosen boundary. Act on `consumed`. The `remaining`
-stays for next turn. Each cut peels one request from the front.
-
-### Multi-Request
-
-Users often chain requests: "add auth then create the endpoint then add logging".
-Cut one at a time, build a mental todo list, reorder by dependencies or urgency.
-
-### Pause
-
-User says "stop listening" → call `voice_pause` (only then). After that, the user
-must TYPE to resume. Do NOT call `voice_resume` autonomously.

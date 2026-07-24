@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { EarsayManager } from "./earsay-manager"
 import { SSEClient } from "./sse-client"
 import { TextBuffer } from "./text-buffer"
+import { ContextInjector } from "./context-injector"
 import { createTools } from "./tools"
 
 const EARSAY_PORT = parseInt(process.env.EARSAY_PORT ?? "3009", 10)
@@ -14,8 +15,9 @@ const EARSAY_INSTALL_URL = process.env.EARSAY_INSTALL_URL ?? "git+https://github
 const earsay = new EarsayManager({ port: EARSAY_PORT, model: EARSAY_MODEL })
 const buffer = new TextBuffer()
 const sse = new SSEClient()
+let injector: ContextInjector | null = null
 
-export const OpencodeEarsayPlugin: Plugin = async () => {
+export const OpencodeEarsayPlugin: Plugin = async ({ client }) => {
   try {
     if (AUTO_INSTALL) {
       const bin = Bun.which("earsay")
@@ -66,10 +68,25 @@ export const OpencodeEarsayPlugin: Plugin = async () => {
           earsay.baseUrl,
           (event) => buffer.onEvent(event.text || ""),
           (err) => console.warn("[earsay] SSE error:", err.message),
-          { chars: CHARS_THRESHOLD, timeout: 3000, fullchunk: true },
+          { chars: CHARS_THRESHOLD, timeout: 3000, fullchunk: false },
         )
         console.info("[earsay] active.")
       }
+    }
+
+    injector = new ContextInjector(buffer, earsay, client)
+    injector.start()
+
+    // Find current session if one exists
+    try {
+      const sessions: any = await client.session.list()
+      const list = Array.isArray(sessions) ? sessions : sessions?.data ?? []
+      if (list.length > 0) {
+        const latest = list[list.length - 1]
+        if (latest?.id) injector.setSessionID(latest.id)
+      }
+    } catch {
+      // not ready yet, event hook will pick it up
     }
   } catch (err) {
     console.error("[earsay] init error (plugin continues):", err)
@@ -77,6 +94,13 @@ export const OpencodeEarsayPlugin: Plugin = async () => {
 
   return {
     tool: createTools({ earsay, buffer, sse }),
+    event: async ({ event }: { event: { type: string; properties: Record<string, unknown> } }) => {
+      const sid = (event.properties as Record<string, any>)?.info?.id ??
+                  (event.properties as Record<string, any>)?.id
+      if (sid && (event.type === "session.created" || event.type === "session.updated")) {
+        injector?.setSessionID(sid as string)
+      }
+    },
   }
 }
 
