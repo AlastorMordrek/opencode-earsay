@@ -1,70 +1,65 @@
 export interface ProgressiveResult {
   text: string
-  silent: boolean
+  deadEvents: number
   charsSinceCheckpoint: number
   potentialIndex: number
 }
 
-export interface NewTextResult {
-  text: string
-  potential_index: number
-}
-
 export class TextBuffer {
-  private buffer = ""
-  private lastCheckpoint = 0
-  private lastActivity = Date.now()
-  private silenceTimeoutMs: number
+  private latestFullText = ""
+  private previousText = ""
+  private deadEvents = 0
+  private earsayCheckpointPos = 0
 
-  constructor(silenceTimeoutMs = 2000) {
-    this.silenceTimeoutMs = silenceTimeoutMs
-  }
-
-  append(chunk: string): void {
-    this.buffer += chunk
-    this.lastActivity = Date.now()
-  }
-
-  getNewText(): NewTextResult {
-    const text = this.buffer.slice(this.lastCheckpoint)
-    return {
-      text,
-      potential_index: this.getPotentialIndex(),
+  onEvent(fullText: string): void {
+    if (fullText === this.previousText) {
+      this.deadEvents++
+    } else {
+      this.deadEvents = 0
+      this.latestFullText = fullText
+      this.previousText = fullText
     }
   }
 
   getProgressive(): ProgressiveResult {
-    const text = this.buffer.slice(this.lastCheckpoint)
-    const elapsed = Date.now() - this.lastActivity
     return {
-      text,
-      silent: elapsed >= this.silenceTimeoutMs,
-      charsSinceCheckpoint: text.length,
-      potentialIndex: this.getPotentialIndex(),
+      text: this.latestFullText,
+      deadEvents: this.deadEvents,
+      charsSinceCheckpoint: this.latestFullText.length,
+      potentialIndex: this.earsayCheckpointPos + this.latestFullText.length,
     }
   }
 
-  setCheckpoint(): { index: number; text: string } {
-    const text = this.buffer.slice(this.lastCheckpoint)
-    this.lastCheckpoint = this.buffer.length
-    return { index: this.getPotentialIndex(), text }
+  cutCheckpoint(relativePos: number): { consumed: string; remaining: string; absolutePos: number } {
+    const clampedPos = Math.max(0, Math.min(relativePos, this.latestFullText.length))
+    const consumed = this.latestFullText.slice(0, clampedPos)
+    const remaining = this.latestFullText.slice(clampedPos)
+    const absolutePos = this.earsayCheckpointPos + clampedPos
+    this.earsayCheckpointPos = absolutePos
+    this.latestFullText = remaining
+    this.previousText = remaining
+    this.deadEvents = 0
+    return { consumed, remaining, absolutePos }
+  }
+
+  clearCheckpoint(): { absolutePos: number } {
+    const pos = this.earsayCheckpointPos
+    this.earsayCheckpointPos = 0
+    return { absolutePos: 0 }
   }
 
   allText(): string {
-    return this.buffer
+    return this.latestFullText
   }
 
   hasUnread(): boolean {
-    return this.buffer.length > this.lastCheckpoint
+    return this.latestFullText.length > 0
   }
 
   reset(): void {
-    this.buffer = ""
-    this.lastCheckpoint = 0
-    this.lastActivity = Date.now()
-  }
-
-  private getPotentialIndex(): number {
-    return this.buffer.length
+    this.latestFullText = ""
+    this.previousText = ""
+    this.deadEvents = 0
+    this.earsayCheckpointPos = 0
   }
 }

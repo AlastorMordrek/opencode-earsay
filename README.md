@@ -2,20 +2,28 @@
 
 OpenCode plugin for real-time voice input via [earsay](https://github.com/AlastorMordrek/earsay).
 
-Speak into your microphone and have transcribed text progressively flow into your OpenCode agent's prompt — no typing needed.
+Speak into your microphone. The LLM analyzes the growing text stream, semantically identifies actionable requests, and acts on them — all while you keep talking.
 
 ## How It Works
 
 ```
-Microphone → earsay (faster-whisper VAD) → SSE stream → plugin → agent polls text each turn
+Microphone → earsay (faster-whisper VAD) → SSE stream (fullchunk) → Plugin TextBuffer
+                                                                           │
+                                            LLM calls voice_get_progressive │
+                                            each turn, analyzes text,       │
+                                            cuts checkpoints semantically   │
+                                                                           ▼
+                                                                Actionable items
+                                                                become user prompts
 ```
 
 The plugin:
-1. Manages earsay as a subprocess
-2. Subscribes to earsay's real-time SSE transcript stream
-3. Accumulates text until silence is detected
-4. Exposes `voice_*` tools for the agent to poll and consume speech
-5. A companion skill teaches the agent progressive accumulation
+- Manages earsay as a subprocess
+- Subscribes to earsay's SSE stream with `fullchunk=true` (each event carries the full accumulated text)
+- Exposes `voice_*` tools for the LLM
+- Tracks `deadEvents` (consecutive empty events ≈ silence) as a supporting signal
+
+The LLM drives the semantic boundary detection — tool descriptions teach the pattern.
 
 ## Prerequisites
 
@@ -24,10 +32,8 @@ The plugin:
   ```bash
   pip install earsay
   ```
-  Or: `pipx install git+https://github.com/AlastorMordrek/earsay.git`
 
 - Working microphone
-- Optional: `earsay warmup --download-model` for instant cold start
 
 ## Installation
 
@@ -40,41 +46,37 @@ Add the plugin to your OpenCode config:
 }
 ```
 
-Restart opencode — Bun auto-installs the plugin.
+Restart opencode — Bun auto-installs. That's it.
 
-Load the skill so the agent knows how to use voice:
+### Optional: Load the Companion Skill
+
+For more nuanced voice behavior guidance, copy the skill:
 
 ```bash
-# The skill is bundled with the plugin at:
-#   node_modules/opencode-earsay/skills/earsay/SKILL.md
-# Copy or symlink it to your skills directory:
-mkdir -p ~/.config/opencode/skills
-cp node_modules/opencode-earsay/skills/earsay/SKILL.md ~/.config/opencode/skills/earsay/
+cp node_modules/opencode-earsay/skills/earsay/SKILL.md \
+  ~/.config/opencode/skills/earsay/SKILL.md
 ```
+
+Then add to your config's `"instructions"` array (ask the LLM to do this).
 
 ## Usage
 
-Once installed and earsay is running, the agent can use these tools:
+Tools available to the LLM:
 
-| Tool | Description |
-|------|-------------|
-| `voice_start` | Start the earsay server |
-| `voice_stop` | Stop the server |
-| `voice_activate` | Begin streaming speech into buffer |
-| `voice_deactivate` | Stop streaming |
-| `voice_get_progressive` | Get text + silence status |
-| `voice_get_new` | Get text since last checkpoint |
-| `voice_set_checkpoint` | Mark text as consumed |
+| Tool | Purpose |
+|------|---------|
+| `voice_start` | Start earsay server (idempotent) |
+| `voice_stop` | Stop server entirely |
+| `voice_activate` | Subscribe to SSE stream, begin text accumulation |
+| `voice_deactivate` | End voice mode |
+| `voice_get_progressive` | Get `{ text, deadEvents, charsSinceCheckpoint }` |
+| `voice_cut_checkpoint(N)` | Claim first N chars as a completed actionable prompt |
+| `voice_clear_checkpoint` | Undo last cut, re-analyze |
+| `voice_set_checkpoint` | Simple: consume all text at once |
 | `voice_pause` / `voice_resume` | Mic control |
-| `voice_status` | Server status |
+| `voice_status` | Server + buffer status |
 
-### Quick Start
-
-1. In opencode, ask the agent:
-   > "Activate voice input, I want to speak my commands"
-2. The agent calls `voice_start` then `voice_activate`
-3. Speak your command naturally
-4. When you pause, the agent accumulates the text and acts on it
+Say: "Start listening" — the LLM handles the rest.
 
 ## Configuration
 
@@ -85,8 +87,7 @@ Environment variables:
 | `EARSAY_PORT` | `3009` | HTTP server port |
 | `EARSAY_MODEL` | `tiny.en` | Whisper model |
 | `EARSAY_CHARS_THRESHOLD` | `30` | SSE chars before event |
-| `EARSAY_SILENCE_TIMEOUT` | `2000` | ms silence = utterance end |
-| `EARSAY_AUTO_START` | `true` | Auto-start on plugin load |
+| `EARSAY_SILENCE_TIMEOUT` | `2000` | ms silence before timeout event |
 
 ## Project Structure
 
@@ -94,13 +95,13 @@ Environment variables:
 opencode-earsay/
 ├── src/
 │   ├── index.ts              # Plugin entry
-│   ├── earsay-manager.ts     # Subprocess lifecycle
+│   ├── earsay-manager.ts     # Subprocess lifecycle + HTTP API
 │   ├── sse-client.ts         # SSE subscription
-│   ├── text-buffer.ts        # Checkpoint-aware buffer
-│   └── tools.ts              # Voice tool definitions
+│   ├── text-buffer.ts        # Fullchunk buffer + deadEvents + cutCheckpoint
+│   └── tools.ts              # 11 voice tool definitions
 ├── skills/
 │   └── earsay/
-│       └── SKILL.md          # Agent skill
+│       └── SKILL.md          # Optional LLM guidance
 ├── package.json
 └── README.md
 ```
@@ -110,14 +111,13 @@ opencode-earsay/
 ```bash
 git clone https://github.com/AlastorMordrek/opencode-earsay.git
 cd opencode-earsay
-bun install
-bun run build    # compile TypeScript
-bun run dev      # watch mode
+npm install
+npm run build
 ```
 
 ## Related Projects
 
-- [earsay](https://github.com/AlastorMordrek/earsay) — Continuous STT daemon (dependency)
+- [earsay](https://github.com/AlastorMordrek/earsay) — Continuous STT daemon
 - [earsay-mcp](https://github.com/AlastorMordrek/earsay-mcp) — MCP bridge for non-OpenCode clients
 
 ## License

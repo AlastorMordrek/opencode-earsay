@@ -91,6 +91,11 @@ export class EarsayManager {
     }
   }
 
+  async setCheckpoint(absolutePos: number): Promise<boolean> {
+    const res = await this.api("POST", `/checkpoint?at=${absolutePos}`)
+    return res !== null
+  }
+
   async ensureRunning(): Promise<boolean> {
     if (this.running) return true
     return this.start()
