@@ -22,9 +22,9 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
 
     voice_start: tool({
       description: [
-        "Start the earsay speech-to-text server. Idempotent — if already running, does nothing.",
-        "Call this once before any other voice tools. The server runs locally on port 3009.",
-        "Returns status and port.",
+        "Start the earsay speech-to-text server. Normally auto-started on plugin load.",
+        "Use this only if the server crashed or was manually stopped.",
+        "Idempotent — does nothing if already running.",
       ].join(" "),
       args: {},
       async execute() {
@@ -32,12 +32,12 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
         if (!ok) {
           return JSON.stringify({ status: "failed", message: "earsay binary not found or failed to start" })
         }
-        return JSON.stringify({ status: "started", port: earsay["baseUrl"] })
+        return JSON.stringify({ status: "started" })
       },
     }),
 
     voice_stop: tool({
-      description: "Stop the earsay server entirely. Kills the process and releases the microphone.",
+      description: "Stop the earsay server entirely. Kills the process, releases the microphone. Speech input will stop.",
       args: {},
       async execute() {
         await earsay.stop()
@@ -47,9 +47,11 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
 
     voice_pause: tool({
       description: [
-        "Pause transcription. The microphone is released and no events are fired",
-        "(including timeout events). The server stays alive. To resume,",
-        "the user must type a command — do not call voice_resume autonomously.",
+        "Pause the microphone. The server stays alive but no audio is captured and",
+        "no events fire (including timeout events). The buffer freezes in its current state.",
+        "IMPORTANT: Only call this when the USER explicitly asks to stop listening",
+        "via typed or previously-spoken command. After pausing, the user must TYPE",
+        "a resume command — do NOT resume autonomously.",
       ].join(" "),
       args: {},
       async execute() {
@@ -62,9 +64,9 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
 
     voice_resume: tool({
       description: [
-        "Resume transcription after a pause. Re-opens the microphone.",
-        "IMPORTANT: Only call this when the user explicitly asks to resume via text chat.",
-        "Do NOT autonomously resume after pausing.",
+        "Resume the microphone after a pause. Re-opens audio capture and events resume flowing.",
+        "CRITICAL: Only call this when the user explicitly types a resume command.",
+        "Do NOT call this autonomously — the mic was paused for a reason.",
       ].join(" "),
       args: {},
       async execute() {
@@ -75,51 +77,53 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
       },
     }),
 
-    voice_activate: tool({
+    voice_subscribe: tool({
       description: [
-        "Activate voice mode. Starts a real-time SSE stream from earsay using fullchunk mode.",
-        "Each event carries the FULL accumulated text since the last checkpoint (not just deltas).",
-        "Call voice_get_progressive each turn to check for new speech.",
-        "The LLM analyzes the growing text semantically and decides where to cut with",
-        "voice_cut_checkpoint when an actionable item is complete.",
+        "Reconnect the SSE event stream if it disconnected. Normally the subscription",
+        "is auto-started on plugin load and requires no user action.",
+        "Use this only if voice_get_progressive returns stale text and",
+        "you suspect the SSE connection dropped.",
       ].join(" "),
       args: {},
       async execute() {
         await ensureEarsay()
-        const baseUrl = earsay["baseUrl"]
         sse.subscribe(
-          baseUrl,
+          earsay.baseUrl,
           (event) => buffer.onEvent(event.text || ""),
           (err) => console.warn("[earsay] SSE error:", err.message),
           { chars: 30, timeout: 3000, fullchunk: true },
         )
-        return JSON.stringify({ status: "active", message: "Voice mode activated. Subscribe to SSE stream started." })
+        return JSON.stringify({ status: "subscribed" })
       },
     }),
 
-    voice_deactivate: tool({
+    voice_unsubscribe: tool({
       description: [
-        "Deactivate voice mode. Unsubscribes from the SSE stream and clears the buffer.",
-        "The earsay server stays running (use voice_stop to fully shut down).",
+        "Unsubscribe from the SSE event stream. Stops buffer updates.",
+        "The earsay server stays running. Use voice_subscribe to reconnect.",
       ].join(" "),
       args: {},
       async execute() {
         sse.unsubscribe()
-        buffer.reset()
-        return JSON.stringify({ status: "inactive" })
+        return JSON.stringify({ status: "unsubscribed" })
       },
     }),
 
     voice_get_progressive: tool({
       description: [
-        "Get the current voice input state. Returns:",
-        "- text: the full accumulated text since the last checkpoint (string)",
-        "- deadEvents: number of consecutive SSE events that contained no new text.",
-        "  Each event fires after ~3 seconds of silence. 3+ deadEvents ≈ 9 seconds of silence.",
-        "- charsSinceCheckpoint: character length of the current text.",
-        "- potentialIndex: absolute character position in earsay's buffer.",
-        "Use this each turn while voice mode is active. Analyze the text semantically:",
-        "if it contains a complete actionable request, call voice_cut_checkpoint to claim it.",
+        "Get the current voice input state. This is the PRIMARY tool for speech input.",
+        "The buffer is always being populated by the SSE stream — call this each turn.",
+        "",
+        "Returns:",
+        "- text: full accumulated text since the last checkpoint. Empty string means",
+        "  no speech yet or all text was consumed by a previous cutCheckpoint.",
+        "- deadEvents: number of consecutive SSE events with no new text.",
+        "  Each event fires after ~3s timeout. 3+ deadEvents ≈ 9s silence.",
+        "- charsSinceCheckpoint: character length of current text.",
+        "- potentialIndex: absolute char position in earsay's buffer.",
+        "",
+        "Analyze the text semantically each turn. When it contains a complete",
+        "actionable request, call voice_cut_checkpoint to claim it.",
       ].join(" "),
       args: {},
       async execute() {
@@ -130,16 +134,19 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
     voice_cut_checkpoint: tool({
       description: [
         "Claim the first N characters of the current text as a completed actionable item.",
-        "Takes a charPosition within the current progressive text.",
-        "The consumed portion (0..charPosition) is returned so you can act on it.",
-        "The remaining text (charPosition..end) stays in the buffer for future passes.",
-        "This calls earsay's checkpoint API to advance the server-side position.",
-        "Example: if text='create user api with get post', calling cutCheckpoint(26)",
-        "consumes 'create user api with get post' (or however long 26 chars is).",
+        "The consumed portion (0..charPosition) is returned for you to act on.",
+        "Remaining text (charPosition..end) stays in the buffer for future passes.",
+        "Calls earsay's checkpoint API server-side.",
+        "",
+        "Example: text='create user api with get and post auth required now add logging'",
+        "If the first complete request ends at char 44 ('create user api with get and post'):",
+        "  cutCheckpoint(44) → consumed='create user api with get and post'",
+        "                       remaining='auth required now add logging'",
+        "",
         "Use when you have identified a semantically complete request in the text.",
       ].join(" "),
       args: {
-        charPosition: tool.schema.number().describe("Character position to cut at. First N chars of the current progressive text become the consumed actionable item. Remaining text stays in the buffer."),
+        charPosition: tool.schema.number().describe("Character position to cut at. First N chars of the current progressive text become the consumed actionable item. Remaining text stays in the buffer for next pass."),
       },
       async execute(args) {
         await ensureEarsay()
@@ -156,10 +163,7 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
     }),
 
     voice_clear_checkpoint: tool({
-      description: [
-        "Undo the last checkpoint cut. Resets the buffer so all text is available again.",
-        "Use if you cut at the wrong position and need to re-analyze.",
-      ].join(" "),
+      description: "Undo the last checkpoint cut. Resets the buffer reclaiming all text. Use if you cut at the wrong position and need to re-analyze from scratch.",
       args: {},
       async execute() {
         buffer.clearCheckpoint()
@@ -167,11 +171,11 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
       },
     }),
 
-    voice_set_checkpoint: tool({
+    voice_consume_all: tool({
       description: [
-        "Simple mode: consume all current text at once.",
-        "Marks the entire current buffer as read. Use when you want to clear the buffer",
-        "without semantic analysis (e.g., at end of session).",
+        "Consume all current text at once. Marks the entire buffer as read.",
+        "Use this when you want a clean slate — e.g., you already processed",
+        "everything or the session is ending.",
       ].join(" "),
       args: {},
       async execute() {
@@ -184,7 +188,7 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
     }),
 
     voice_status: tool({
-      description: "Get the status of the earsay server and the text buffer. Returns server status, buffer length, deadEvents, and SSE connection state.",
+      description: "Get the status of the earsay server and the text buffer. Returns server state, buffer length, deadEvents count, and SSE connection status.",
       args: {},
       async execute() {
         const s = earsay.isRunning ? await earsay.status() : null

@@ -1,43 +1,27 @@
 # opencode-earsay
 
-OpenCode plugin for real-time voice input via [earsay](https://github.com/AlastorMordrek/earsay).
+OpenCode plugin for always-on continuous voice input via [earsay](https://github.com/AlastorMordrek/earsay).
 
-Speak into your microphone. The LLM analyzes the growing text stream, semantically identifies actionable requests, and acts on them — all while you keep talking.
+Install once. Restart opencode. Speak. The plugin auto-starts, auto-installs earsay if missing,
+and streams transcribed speech into a buffer the LLM analyzes each turn.
 
 ## How It Works
 
 ```
-Microphone → earsay (faster-whisper VAD) → SSE stream (fullchunk) → Plugin TextBuffer
+Plugin loads → auto-install earsay (if missing) → auto-start server → auto-subscribe SSE
                                                                            │
-                                            LLM calls voice_get_progressive │
-                                            each turn, analyzes text,       │
-                                            cuts checkpoints semantically   │
-                                                                           ▼
-                                                                Actionable items
-                                                                become user prompts
+                              Each turn: LLM calls voice_get_progressive ←─┤
+                              → analyzes text semantically
+                              → voice_cut_checkpoint(boundary) when complete
+                              → acts on consumed text, remaining stays for next turn
 ```
 
-The plugin:
-- Manages earsay as a subprocess
-- Subscribes to earsay's SSE stream with `fullchunk=true` (each event carries the full accumulated text)
-- Exposes `voice_*` tools for the LLM
-- Tracks `deadEvents` (consecutive empty events ≈ silence) as a supporting signal
-
-The LLM drives the semantic boundary detection — tool descriptions teach the pattern.
-
-## Prerequisites
-
-- OpenCode ≥ 1.3.13
-- [earsay](https://github.com/AlastorMordrek/earsay) installed:
-  ```bash
-  pip install earsay
-  ```
-
-- Working microphone
+The LLM decides when to ACT based on semantic understanding. It does NOT decide when to
+listen — that's always on. Only a user "stop listening" command pauses the microphone.
 
 ## Installation
 
-Add the plugin to your OpenCode config:
+Add one line to your OpenCode config:
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
@@ -46,62 +30,55 @@ Add the plugin to your OpenCode config:
 }
 ```
 
-Restart opencode — Bun auto-installs. That's it.
-
-### Optional: Load the Companion Skill
-
-For more nuanced voice behavior guidance, copy the skill:
-
-```bash
-cp node_modules/opencode-earsay/skills/earsay/SKILL.md \
-  ~/.config/opencode/skills/earsay/SKILL.md
-```
-
-Then add to your config's `"instructions"` array (ask the LLM to do this).
+Restart opencode. Done. Bun auto-installs the package.
 
 ## Usage
 
-Tools available to the LLM:
+You don't need to start anything. Once opencode restarts, the plugin is live.
+Just start speaking. The LLM will see your speech in `voice_get_progressive`.
+
+**To stop listening:** say "stop listening" — the LLM calls `voice_pause`.
+**To resume:** type a resume command.
+
+## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `voice_start` | Start earsay server (idempotent) |
-| `voice_stop` | Stop server entirely |
-| `voice_activate` | Subscribe to SSE stream, begin text accumulation |
-| `voice_deactivate` | End voice mode |
-| `voice_get_progressive` | Get `{ text, deadEvents, charsSinceCheckpoint }` |
-| `voice_cut_checkpoint(N)` | Claim first N chars as a completed actionable prompt |
-| `voice_clear_checkpoint` | Undo last cut, re-analyze |
-| `voice_set_checkpoint` | Simple: consume all text at once |
-| `voice_pause` / `voice_resume` | Mic control |
-| `voice_status` | Server + buffer status |
-
-Say: "Start listening" — the LLM handles the rest.
+| `voice_get_progressive` | Primary — get current text + deadEvents |
+| `voice_cut_checkpoint(N)` | Claim first N chars as actionable prompt |
+| `voice_clear_checkpoint` | Undo last cut |
+| `voice_consume_all` | Consume all text at once |
+| `voice_subscribe` | Reconnect SSE (auto-connected) |
+| `voice_unsubscribe` | Stop buffer updates |
+| `voice_pause` | Pause mic (user must type to resume) |
+| `voice_resume` | Resume mic (only when user types it) |
+| `voice_start` | Start server (auto-started) |
+| `voice_stop` | Kill server completely |
+| `voice_status` | Server + buffer state |
 
 ## Configuration
 
-Environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
+| Env Var | Default | Description |
+|---------|---------|-------------|
 | `EARSAY_PORT` | `3009` | HTTP server port |
 | `EARSAY_MODEL` | `tiny.en` | Whisper model |
-| `EARSAY_CHARS_THRESHOLD` | `30` | SSE chars before event |
-| `EARSAY_SILENCE_TIMEOUT` | `2000` | ms silence before timeout event |
+| `EARSAY_CHARS_THRESHOLD` | `30` | SSE chars threshold |
+| `EARSAY_AUTO_INSTALL` | `true` | pip install earsay if missing |
+| `EARSAY_AUTO_START` | `true` | Auto-start server on load |
 
 ## Project Structure
 
 ```
 opencode-earsay/
 ├── src/
-│   ├── index.ts              # Plugin entry
-│   ├── earsay-manager.ts     # Subprocess lifecycle + HTTP API
-│   ├── sse-client.ts         # SSE subscription
-│   ├── text-buffer.ts        # Fullchunk buffer + deadEvents + cutCheckpoint
-│   └── tools.ts              # 11 voice tool definitions
+│   ├── index.ts              # Plugin entry — auto-install, auto-start, auto-subscribe
+│   ├── earsay-manager.ts     # Subprocess lifecycle + HTTP API proxy
+│   ├── sse-client.ts         # SSE subscription (fullchunk mode)
+│   ├── text-buffer.ts        # Fullchunk buffer, deadEvents, cutCheckpoint
+│   └── tools.ts              # 11 tools with semantic descriptions
 ├── skills/
 │   └── earsay/
-│       └── SKILL.md          # Optional LLM guidance
+│       └── SKILL.md          # Optional LLM guidance (bundled, documented in README)
 ├── package.json
 └── README.md
 ```
@@ -114,11 +91,6 @@ cd opencode-earsay
 npm install
 npm run build
 ```
-
-## Related Projects
-
-- [earsay](https://github.com/AlastorMordrek/earsay) — Continuous STT daemon
-- [earsay-mcp](https://github.com/AlastorMordrek/earsay-mcp) — MCP bridge for non-OpenCode clients
 
 ## License
 
