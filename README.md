@@ -1,23 +1,35 @@
 # opencode-earsay
 
-OpenCode plugin for always-on continuous voice input via [earsay](https://github.com/AlastorMordrek/earsay).
+OpenCode plugin for always-on continuous voice input via [EarSay](https://github.com/AlastorMordrek/earsay).
 
-Install once. Restart opencode. Speak. The plugin auto-starts, auto-installs earsay if missing,
-and streams transcribed speech into a buffer the LLM analyzes each turn.
+Install once. Restart opencode. Speak. Text flows into the buffer. The LLM analyzes it each turn, semantically identifies actionable requests, and cuts checkpoints at natural boundaries.
 
 ## How It Works
 
 ```
-Plugin loads → auto-install earsay (if missing) → auto-start server → auto-subscribe SSE
-                                                                           │
-                              Each turn: LLM calls voice_get_progressive ←─┤
-                              → analyzes text semantically
-                              → voice_cut_checkpoint(boundary) when complete
-                              → acts on consumed text, remaining stays for next turn
+                ┌─ EarSay (standalone STT daemon) ─────────────────┐
+                │  faster-whisper · VAD · HTTP API · SSE streaming │
+                │  github.com/AlastorMordrek/earsay                 │
+                └────────────────────────┬─────────────────────────┘
+                                         │ SSE (fullchunk, 3s timeout)
+                                         ▼
+Plugin loads ─→ auto-installs EarSay (pipx) ─→ auto-starts server ─→ subscribes to SSE
+                                                                       │
+                                                  Each turn: LLM calls │
+                                                  voice_get_progressive←┘
+                                                  → analyzes text semantically
+                                                  → voice_cut_checkpoint(boundary)
+                                                  → acts on consumed text
 ```
 
-The LLM decides when to ACT based on semantic understanding. It does NOT decide when to
-listen — that's always on. Only a user "stop listening" command pauses the microphone.
+EarSay is the dependency. This plugin wires it into OpenCode with 11 tools and automatic lifecycle management.
+
+## Prerequisites
+
+- [OpenCode](https://opencode.ai) ≥ 1.3.13
+- Working microphone
+
+EarSay is auto-installed via pipx on first plugin load. Python 3.10–3.12 required (3.13+ not yet supported by faster-whisper).
 
 ## Installation
 
@@ -30,15 +42,15 @@ Add one line to your OpenCode config:
 }
 ```
 
-Restart opencode. Done. Bun auto-installs the package.
+Restart opencode. Done. Bun auto-installs the package, the plugin auto-installs EarSay, auto-starts the server, and subscribes to the speech stream.
 
 ## Usage
 
 You don't need to start anything. Once opencode restarts, the plugin is live.
-Just start speaking. The LLM will see your speech in `voice_get_progressive`.
+Just speak. The LLM sees your speech in `voice_get_progressive`.
 
-**To stop listening:** say "stop listening" — the LLM calls `voice_pause`.
-**To resume:** type a resume command.
+**To stop listening:** "stop listening" → `voice_pause` (mic released, events freeze).
+**To resume:** type a resume command (mic was paused, can't speak to resume).
 
 ## Tools
 
@@ -63,22 +75,26 @@ Just start speaking. The LLM will see your speech in `voice_get_progressive`.
 | `EARSAY_PORT` | `3009` | HTTP server port |
 | `EARSAY_MODEL` | `tiny.en` | Whisper model |
 | `EARSAY_CHARS_THRESHOLD` | `30` | SSE chars threshold |
-| `EARSAY_AUTO_INSTALL` | `true` | pip install earsay if missing |
-| `EARSAY_AUTO_START` | `true` | Auto-start server on load |
+| `EARSAY_AUTO_INSTALL` | `true` | Auto-install via pipx if missing |
+| `EARSAY_AUTO_START` | `true` | Auto-start server on plugin load |
+| `EARSAY_INSTALL_URL` | `git+https://...` | pipx/pip install target |
+
+## Crash Safety
+
+The plugin initializes inside a top-level try-catch. No failure — install error,
+server crash, missing binary, unexpected exception — can crash opencode.
+The tools are always registered. If the server is down, `voice_start` retries.
 
 ## Project Structure
 
 ```
 opencode-earsay/
 ├── src/
-│   ├── index.ts              # Plugin entry — auto-install, auto-start, auto-subscribe
-│   ├── earsay-manager.ts     # Subprocess lifecycle + HTTP API proxy
+│   ├── index.ts              # Entry — crash-safe init, auto-install/start/SSE
+│   ├── earsay-manager.ts     # EarSay subprocess lifecycle + HTTP API proxy
 │   ├── sse-client.ts         # SSE subscription (fullchunk mode)
 │   ├── text-buffer.ts        # Fullchunk buffer, deadEvents, cutCheckpoint
-│   └── tools.ts              # 11 tools with semantic descriptions
-├── skills/
-│   └── earsay/
-│       └── SKILL.md          # Optional LLM guidance (bundled, documented in README)
+│   └── tools.ts              # 11 tools, crash-safe implementations
 ├── package.json
 └── README.md
 ```
