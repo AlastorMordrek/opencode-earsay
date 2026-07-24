@@ -43,20 +43,45 @@ export class EarsayManager {
       console.warn("[earsay] earsay binary not found. Install: pip install earsay")
       return false
     }
-    this.proc = Bun.spawn([bin, "listen", "--port", String(this.port), "--model", this.model], {
+    const proc = Bun.spawn([bin, "listen", "--port", String(this.port), "--model", this.model], {
       stdout: "pipe",
       stderr: "pipe",
     })
+    this.proc = proc
     this.proc.unref()
-    for (let i = 0; i < 15; i++) {
-      await sleep(500)
-      if (await this.ping()) {
-        this.running = true
-        console.info("[earsay] server started on port", this.port)
-        return true
+
+    const relayStderr = async () => {
+      const stderr = proc.stderr
+      if (!stderr || typeof stderr === "number") return
+      const decoder = new TextDecoder()
+      try {
+        for await (const chunk of stderr as ReadableStream<Uint8Array>) {
+          const text = decoder.decode(chunk, { stream: true })
+          for (const line of text.split("\n").filter(Boolean)) {
+            console.info("[earsay]", line.trimEnd())
+          }
+        }
+      } catch {
+        // stderr stream ended
       }
     }
-    console.warn("[earsay] server failed to start within 7.5s")
+    relayStderr()
+
+    const maxRetries = 90
+    const intervalMs = 1000
+    for (let i = 0; i < maxRetries; i++) {
+      await sleep(intervalMs)
+      if (await this.ping()) {
+        this.running = true
+        console.info("[earsay] server ready on port", this.port)
+        return true
+      }
+      if (this.proc && this.proc.exitCode !== null) {
+        console.warn("[earsay] process exited early with code", this.proc.exitCode)
+        return false
+      }
+    }
+    console.warn("[earsay] server did not respond within 90s")
     return false
   }
 

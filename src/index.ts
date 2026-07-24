@@ -18,12 +18,27 @@ export const OpencodeEarsayPlugin: Plugin = async () => {
   if (AUTO_INSTALL) {
     const bin = Bun.which("earsay")
     if (!bin) {
-      console.info("[earsay] earsay not found. Auto-installing via pip...")
-      const result = Bun.spawnSync(["pip", "install", "earsay"])
-      if (result.exitCode === 0) {
+      console.info("[earsay] earsay not found. Installing via pip (may take a minute)...")
+      const proc = Bun.spawn(["pip", "install", "earsay", "-q"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const readAll = async (stream: ReadableStream | null) => {
+        if (!stream) return ""
+        const decoder = new TextDecoder()
+        let text = ""
+        for await (const chunk of stream as ReadableStream<Uint8Array>) {
+          text += decoder.decode(chunk)
+        }
+        return text.trim()
+      }
+      const [stdout, stderr] = await Promise.all([readAll(proc.stdout), readAll(proc.stderr)])
+      const exitCode = await proc.exited
+      if (exitCode === 0) {
         console.info("[earsay] earsay installed successfully.")
       } else {
-        console.warn("[earsay] pip install failed. Install manually: pip install earsay")
+        const msg = stderr || stdout || "unknown error"
+        console.warn("[earsay] pip install failed:", msg)
       }
     }
   }
