@@ -9,6 +9,7 @@ const EARSAY_MODEL = process.env.EARSAY_MODEL ?? "tiny.en"
 const CHARS_THRESHOLD = parseInt(process.env.EARSAY_CHARS_THRESHOLD ?? "30", 10)
 const AUTO_INSTALL = process.env.EARSAY_AUTO_INSTALL !== "false"
 const AUTO_START = process.env.EARSAY_AUTO_START !== "false"
+const EARSAY_INSTALL_URL = process.env.EARSAY_INSTALL_URL ?? "git+https://github.com/AlastorMordrek/earsay.git"
 
 const earsay = new EarsayManager({ port: EARSAY_PORT, model: EARSAY_MODEL })
 const buffer = new TextBuffer()
@@ -18,11 +19,6 @@ export const OpencodeEarsayPlugin: Plugin = async () => {
   if (AUTO_INSTALL) {
     const bin = Bun.which("earsay")
     if (!bin) {
-      console.info("[earsay] earsay not found. Installing via pip (may take a minute)...")
-      const proc = Bun.spawn(["pip", "install", "earsay", "-q"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      })
       const readAll = async (stream: ReadableStream | null) => {
         if (!stream) return ""
         const decoder = new TextDecoder()
@@ -32,13 +28,28 @@ export const OpencodeEarsayPlugin: Plugin = async () => {
         }
         return text.trim()
       }
-      const [stdout, stderr] = await Promise.all([readAll(proc.stdout), readAll(proc.stderr)])
-      const exitCode = await proc.exited
-      if (exitCode === 0) {
-        console.info("[earsay] earsay installed successfully.")
-      } else {
-        const msg = stderr || stdout || "unknown error"
-        console.warn("[earsay] pip install failed:", msg)
+      const runners = [
+        { bin: "pipx", args: ["pipx", "install", EARSAY_INSTALL_URL] },
+        { bin: "pip3", args: ["pip3", "install", EARSAY_INSTALL_URL] },
+        { bin: "pip", args: ["pip", "install", EARSAY_INSTALL_URL] },
+      ]
+      let installed = false
+      for (const runner of runners) {
+        if (!Bun.which(runner.bin)) continue
+        console.info(`[earsay] earsay not found. Installing via ${runner.bin} (may take a minute)...`)
+        const proc = Bun.spawn(runner.args, { stdout: "pipe", stderr: "pipe" })
+        const [so, se] = await Promise.all([readAll(proc.stdout), readAll(proc.stderr)])
+        const code = await proc.exited
+        if (code === 0) {
+          console.info("[earsay] earsay installed successfully via", runner.bin)
+          installed = true
+          break
+        }
+        console.warn(`[earsay] ${runner.bin} failed:`, se || so || "unknown error")
+      }
+      if (!installed) {
+        console.warn("[earsay] could not install earsay automatically.")
+        console.warn("[earsay] manually run: pipx install", EARSAY_INSTALL_URL)
       }
     }
   }
