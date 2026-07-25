@@ -1,45 +1,12 @@
 # opencode-earsay
 
-OpenCode plugin for always-on continuous voice input via [EarSay](https://github.com/AlastorMordrek/earsay).
+Voice-operated OpenCode plugin. Speak naturally — the plugin transcribes your
+microphone, feeds the text into the LLM's context, and triggers the agent to
+act when enough speech has accumulated.
 
-The plugin auto-installs the EarSay STT daemon (Python + faster-whisper), starts it, subscribes to the live transcription stream, and injects `[Voice]:` messages into the session context. After enough speech arrives, it triggers an LLM turn. The LLM analyzes the accumulated text and decides whether to act.
+---
 
-## How It Works
-
-```
-                ┌─ EarSay (standalone STT daemon) ─────────────────┐
-                │  faster-whisper · VAD · HTTP API · SSE streaming │
-                │  github.com/AlastorMordrek/earsay                 │
-                └────────────────────────┬─────────────────────────┘
-                                         │ SSE (delta mode, 30 chars / 3s timeout)
-                                         ▼
-Plugin loads ─→ auto-installs EarSay (pipx → uv → manual) ─→ auto-starts server ─→ subscribes to SSE
-                                                                       │
-                                      ┌────────────────────────────────┘
-                                      ▼
-                    ContextInjector (tick every 1s)
-                      ├─ text event → inject [Voice]: $delta as noReply
-                      └─ 3 events + new text → trigger LLM turn
-                                                                       │
-                                                                       ▼
-                    LLM sees [Voice]: messages in context
-                    → analyzes semantically
-                    → voice_cut_checkpoint(boundary) to claim
-                    → acts on consumed text
-```
-
-## Prerequisites
-
-- [OpenCode](https://opencode.ai) ≥ 1.3.13
-- Working microphone
-
-The plugin downloads and manages its own Python 3.12 and EarSay installation. No pre-installed Python required.
-
-## Installation
-
-### Option 1: Deploy script (recommended)
-
-Clone, build, and run the deploy script:
+## Quick Start
 
 ```bash
 git clone https://github.com/AlastorMordrek/opencode-earsay.git
@@ -48,7 +15,7 @@ npm install && npm run build
 ./deploy.sh
 ```
 
-Then add the skill to `~/.config/opencode/opencode.jsonc`:
+Add the skill to your OpenCode config (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
 {
@@ -58,69 +25,133 @@ Then add the skill to `~/.config/opencode/opencode.jsonc`:
 }
 ```
 
-Restart opencode. The plugin auto-installs EarSay, starts the server, and begins listening.
+Restart opencode. Speak. The LLM sees `[Voice]:` messages in context and
+responds to your commands.
+
+---
+
+## Prerequisites
+
+- OpenCode ≥ 1.3.13
+- Working microphone (built-in, USB, or Bluetooth)
+
+No Python, uv, or earsay to install beforehand — the plugin downloads and
+manages its own Python 3.12 and the EarSay STT daemon automatically.
+
+---
+
+## Installation
+
+### Option 1: Deploy script (recommended)
+
+```bash
+git clone https://github.com/AlastorMordrek/opencode-earsay.git
+cd opencode-earsay
+npm install && npm run build
+./deploy.sh
+```
+
+Then add the skill line shown above to `opencode.jsonc` and restart.
 
 ### Option 2: Manual install
 
 ```bash
-# 1. Clone and build
 git clone https://github.com/AlastorMordrek/opencode-earsay.git
 cd opencode-earsay
 npm install && npm run build
 
-# 2. Deploy plugin files
 mkdir -p ~/.config/opencode/plugins/opencode-earsay-lib
 cp dist/*.js dist/*.d.ts ~/.config/opencode/plugins/opencode-earsay-lib/
 
-# 3. Create plugin entry point
 cat > ~/.config/opencode/plugins/opencode-earsay.js <<'PLUGINEOF'
 import { OpencodeEarsayPlugin } from "./opencode-earsay-lib/index.js"
 export default OpencodeEarsayPlugin
 export { OpencodeEarsayPlugin }
 PLUGINEOF
 
-# 4. Install skill (teaches the LLM about voice tools)
 mkdir -p ~/.config/opencode/skills/earsay
 cp skills/earsay/SKILL.md ~/.config/opencode/skills/earsay/SKILL.md
-
-# 5. Add skill to opencode.jsonc
-#    Edit ~/.config/opencode/opencode.jsonc and append to "instructions":
-#    "~/.config/opencode/skills/earsay/SKILL.md"
-
-# 6. Restart opencode
 ```
 
-On restart, the plugin auto-installs EarSay (Python 3.12 + faster-whisper via pipx or uv), starts the server, and subscribes to the speech stream. No manual commands needed.
+Edit `~/.config/opencode/opencode.jsonc` and add the skill line to the
+`"instructions"` array (shown above). Restart opencode.
+
+---
 
 ## Usage
 
-Just speak. The plugin is live from the moment opencode starts.
+Nothing to start. Once opencode restarts, the plugin is live.
 
-The LLM sees your speech as `[Voice]:` messages in the conversation history.
-When enough speech accumulates, the LLM is triggered with those messages in context.
-It analyzes the text and decides whether to act or wait for more input.
+- **Speak** — the plugin transcribes and injects `[Voice]:` text into the
+  session context as `noReply` messages.
+- **LLM triggers** — after enough speech arrives, the LLM is woken up with
+  the accumulated voice text in context. It decides whether the user said
+  something actionable or needs to keep talking.
+- **Stop listening** — say "stop listening". The LLM calls `voice_pause`.
+  The microphone is released and events freeze.
+- **Resume listening** — type a resume command. The mic was paused so you
+  can't speak to resume.
 
-**To stop listening:** say "stop listening" — the LLM calls `voice_pause`.
-The microphone is released, events freeze.
-**To resume:** type a resume command (the mic was paused, you can't speak to resume).
+---
+
+## How It Works
+
+Four components work together:
+
+**EarSay** (STT daemon) — a Python process that captures microphone audio,
+runs it through faster-whisper, and makes the transcription available via an
+HTTP API with Server-Sent Events. The plugin auto-installs it on first load
+(tries pipx first, falls back to uv → Python 3.12 → uv tool install).
+
+**SSE client** — subscribes to EarSay's event stream. Each chunk of
+transcribed text arrives as an SSE event. The stream auto-reconnects on
+disconnect with a 3-second retry delay.
+
+**Text buffer** — accumulates incoming text chunks. Tracks how many
+consecutive text events and silence (empty) events have arrived. Supports
+checkpoint operations that let the LLM mark portions as consumed.
+
+**Context injector** — runs a 1-second tick loop. On each tick: if new text
+has arrived, it injects a `[Voice]:` message into the session (as `noReply`
+so it doesn't visibly affect the TUI). When the text has grown AND enough
+events have accumulated (3 text events or 3 silence events), it triggers an
+LLM turn with an empty user prompt — the voice messages are already in
+context for the LLM to analyze.
+
+The LLM sees the conversation history like this:
+
+```
+User [Voice]: create a new api
+User [Voice]:  endpoint for users
+User [Voice]:  with jwt auth
+User:     ← empty trigger prompt
+```
+
+The LLM decides: is this a complete request? Call `voice_cut_checkpoint` to
+claim the first N characters. Need more context? Respond with "waiting for
+more input". Multiple requests chained? Cut one at a time.
+
+---
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `voice_get_progressive` | Get current accumulated text + event counters |
+| `voice_get_progressive` | Read current accumulated text + event counters |
 | `voice_cut_checkpoint(N)` | Claim first N chars as a completed actionable item |
-| `voice_clear_checkpoint` | Undo the last checkpoint cut |
-| `voice_consume_all` | Consume all accumulated text at once |
-| `voice_pause` | Pause microphone (user must type to resume) |
-| `voice_resume` | Resume microphone (only when user types it) |
-| `voice_start` | Start the earsay server (auto-started) |
-| `voice_stop` | Stop the earsay server entirely |
-| `voice_subscribe` | Reconnect SSE event stream |
-| `voice_unsubscribe` | Unsubscribe from SSE event stream |
-| `voice_uninstall` | Remove the plugin and optionally earsay |
-| `voice_uninstall_confirm` | Confirm and execute full removal |
-| `voice_status` | Server + buffer + SSE connection state |
+| `voice_clear_checkpoint` | Undo the last checkpoint cut, reclaim all text |
+| `voice_consume_all` | Consume all accumulated text at once (clean slate) |
+| `voice_pause` | Release microphone (user must type to resume) |
+| `voice_resume` | Reopen microphone (only when user types it) |
+| `voice_start` | Start the earsay server (auto-started on load) |
+| `voice_stop` | Kill the earsay server and release microphone |
+| `voice_subscribe` | Reconnect the SSE event stream if it dropped |
+| `voice_unsubscribe` | Stop SSE updates |
+| `voice_uninstall` | Stop server, check if plugin installed earsay, ask confirmation |
+| `voice_uninstall_confirm` | Execute full removal (earsay + Python + plugin files still need manual cleanup) |
+| `voice_status` | Server status + buffer state + SSE connection |
+
+---
 
 ## Configuration
 
@@ -131,14 +162,10 @@ Environment variables (set before starting opencode):
 | `EARSAY_PORT` | `3009` | HTTP server port |
 | `EARSAY_MODEL` | `tiny.en` | Whisper model size |
 | `EARSAY_CHARS_THRESHOLD` | `30` | SSE chars threshold for text events |
-| `EARSAY_AUTO_INSTALL` | `"true"` | Set to `"false"` to skip auto-install of earsay |
-| `EARSAY_AUTO_START` | `"true"` | Set to `"false"` to skip auto-start of the server |
+| `EARSAY_AUTO_INSTALL` | `"true"` | Set to `"false"` to skip auto-install |
+| `EARSAY_AUTO_START` | `"true"` | Set to `"false"` to skip auto-start |
 
-## Crash Safety
-
-The plugin initializes inside a top-level try-catch. No failure — install error,
-server crash, missing binary, unexpected exception — can crash opencode.
-The tools are always registered. If the server is down, `voice_start` retries.
+---
 
 ## Project Structure
 
@@ -149,17 +176,28 @@ opencode-earsay/
 │   ├── installer.ts          # EarSay auto-installer (pipx → uv → manual)
 │   ├── earsay-manager.ts     # Subprocess lifecycle + HTTP API proxy
 │   ├── sse-client.ts         # SSE subscription with auto-reconnect
-│   ├── text-buffer.ts        # Accumulated text buffer + checkpoint management
+│   ├── text-buffer.ts        # Accumulated text + checkpoint management
 │   ├── context-injector.ts   # Tick loop: injects [Voice] + triggers LLM
 │   ├── tools.ts              # 13 voice tools
 │   └── util.ts               # Node.js helpers (which, spawn, file ops, logger)
 ├── skills/
 │   └── earsay/
-│       └── SKILL.md          # Skill file — teaches LLM how voice input works
-├── deploy.sh                 # One-command deployment script
+│       └── SKILL.md          # Teaches the LLM how voice input works
+├── deploy.sh                 # One-command deployment
 ├── package.json
 └── README.md
 ```
+
+---
+
+## Crash Safety
+
+The plugin initializes inside a top-level try-catch. No failure — install
+error, server crash, missing binary, unexpected exception — can crash
+opencode. The tools are always registered. If the server is down,
+`voice_start` retries.
+
+---
 
 ## Development
 
@@ -169,6 +207,8 @@ cd opencode-earsay
 npm install
 npm run build     # compile TypeScript → dist/
 ```
+
+---
 
 ## License
 
