@@ -6,31 +6,69 @@ interface RunnerResult {
   output: string
 }
 
-async function run(args: string[]): Promise<RunnerResult> {
+async function run(args: string[], opts?: { timeout?: number }): Promise<RunnerResult> {
   const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" })
   const decoder = new TextDecoder()
   let stdout = ""
   let stderr = ""
-  for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
-    stdout += decoder.decode(chunk)
-  }
-  for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
-    stderr += decoder.decode(chunk)
-  }
+  try {
+    for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
+      stdout += decoder.decode(chunk)
+    }
+  } catch { /* stream ended */ }
+  try {
+    for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
+      stderr += decoder.decode(chunk)
+    }
+  } catch { /* stream ended */ }
   const code = await proc.exited
   return { ok: code === 0, output: (stderr || stdout).trim() }
 }
 
+function testPythonVersion(py: string): string | null {
+  const result = Bun.spawnSync([py, "-c", "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')"])
+  if (result.exitCode !== 0) return null
+  const version = result.stdout.toString().trim()
+  const parts = version.split(".").map(Number)
+  if (parts[0] === 3 && parts[1] >= COMPATIBLE_PYTHON_RANGE.min && parts[1] <= COMPATIBLE_PYTHON_RANGE.max) {
+    return py
+  }
+  return null
+}
+
 function findCompatiblePython(): string | null {
+  // Search PATH
   for (const cmd of ["python3.12", "python3.11", "python3.10", "python3"]) {
     const path = Bun.which(cmd)
-    if (!path) continue
-    const result = Bun.spawnSync([path, "-c", "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')"])
-    if (result.exitCode !== 0) continue
-    const version = result.stdout.toString().trim()
-    const parts = version.split(".").map(Number)
-    if (parts[0] === 3 && parts[1] >= COMPATIBLE_PYTHON_RANGE.min && parts[1] <= COMPATIBLE_PYTHON_RANGE.max) {
-      return path
+    if (path) {
+      const ok = testPythonVersion(path)
+      if (ok) return ok
+    }
+  }
+  // Search common Homebrew Cellar paths (installed but not linked)
+  const home = Bun.env.HOME ?? ""
+  const cellarCandidates = [
+    "/usr/local/Cellar/python@3.12/*/bin/python3.12",
+    "/opt/homebrew/Cellar/python@3.12/*/bin/python3.12",
+    "/usr/local/Cellar/python@3.11/*/bin/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/*/bin/python3.11",
+    "/usr/local/Cellar/python@3.10/*/bin/python3.10",
+    "/opt/homebrew/Cellar/python@3.10/*/bin/python3.10",
+    `${home}/.pyenv/versions/3.12/bin/python3.12`,
+    `${home}/.pyenv/versions/3.11/bin/python3.11`,
+    `${home}/.pyenv/versions/3.10/bin/python3.10`,
+  ]
+  for (const pattern of cellarCandidates) {
+    const matches = Bun.spawnSync(["sh", "-c", `ls ${pattern} 2>/dev/null`])
+    if (matches.exitCode === 0) {
+      const paths = matches.stdout.toString().trim().split("\n")
+      for (const p of paths) {
+        const trimmed = p.trim()
+        if (trimmed) {
+          const ok = testPythonVersion(trimmed)
+          if (ok) return ok
+        }
+      }
     }
   }
   return null
@@ -40,19 +78,16 @@ function ensurePipxAvailable(py: string): boolean {
   const probe = Bun.spawnSync([py, "-m", "pipx", "--version"])
   if (probe.exitCode === 0) return true
   const r = Bun.spawnSync([py, "-m", "pip", "install", "--user", "pipx"])
-  if (r.exitCode !== 0) {
-    Bun.spawnSync([py, "-m", "pip", "install", "--user", "--break-system-packages", "pipx"])
+  if (r.exitCode === 0) {
+    return Bun.spawnSync([py, "-m", "pipx", "--version"]).exitCode === 0
   }
-  const retry = Bun.spawnSync([py, "-m", "pipx", "--version"])
-  return retry.exitCode === 0
+  const r2 = Bun.spawnSync([py, "-m", "pip", "install", "--user", "--break-system-packages", "pipx"])
+  return r2.exitCode === 0 && Bun.spawnSync([py, "-m", "pipx", "--version"]).exitCode === 0
 }
 
 async function installViaPipx(py: string, url: string): Promise<boolean> {
   const r = await run([py, "-m", "pipx", "install", url])
-  if (r.ok) return true
-  // Retry with explicit compatible python argument
-  const r2 = await run([py, "-m", "pipx", "install", "--python", py, url])
-  return r2.ok
+  return r.ok
 }
 
 async function tryInstallPipx(py: string, url: string): Promise<boolean> {
@@ -60,54 +95,94 @@ async function tryInstallPipx(py: string, url: string): Promise<boolean> {
   return installViaPipx(py, url)
 }
 
-async function tryInstallPip(py: string, url: string): Promise<boolean> {
-  const r = await run([py, "-m", "pip", "install", url])
-  if (r.ok) return true
-  const r2 = await run([py, "-m", "pip", "install", "--break-system-packages", url])
-  return r2.ok
-}
+async function downloadUv(): Promise<string | null> {
+  const uvDir = `${Bun.env.HOME ?? "~"}/.earsay/bin`
+  const uvPath = `${uvDir}/uv`
+  if (Bun.which(uvPath)) return uvPath
 
-function installPyenv(py: string): boolean {
-  console.info("[earsay] installing pyenv via pip...")
-  const r = Bun.spawnSync([py, "-m", "pip", "install", "pyenv", "--user"])
-  if (r.exitCode === 0) console.info("[earsay] pyenv installed.")
-  return r.exitCode === 0
-}
+  // Detect platform
+  const uname = Bun.spawnSync(["uname", "-sm"])
+  if (uname.exitCode !== 0) return null
+  const [kernel, archRaw] = uname.stdout.toString().trim().split(" ")
+  const arch = archRaw?.toLowerCase() === "arm64" ? "aarch64" : "x86_64"
 
-function installPythonViaPyenv(): string | null {
-  console.info("[earsay] installing Python 3.12 via pyenv (may take a while)...")
-  const pyenv = Bun.which("pyenv")
-  if (!pyenv) {
-    console.warn("[earsay] pyenv not found. Install: brew install pyenv")
+  let target: string
+  if (kernel === "Darwin") {
+    target = `${arch}-apple-darwin`
+  } else if (kernel === "Linux") {
+    target = `${arch}-unknown-linux-gnu`
+  } else {
     return null
   }
-  const installResult = Bun.spawnSync([pyenv, "install", "-s", "3.12"])
-  if (installResult.exitCode !== 0) {
-    console.warn("[earsay] pyenv install 3.12 failed.")
+
+  // Fetch latest release tag
+  try {
+    const req = await fetch(
+      "https://api.github.com/repos/astral-sh/uv/releases/latest",
+      { headers: { "Accept": "application/json", "User-Agent": "earsay-installer" } },
+    )
+    if (!req.ok) return null
+    const release: any = await req.json()
+    const tag = release.tag_name as string
+
+    // Find asset for this platform
+    const assetName = `uv-${target}.tar.gz`
+    const asset = release.assets?.find((a: any) => a.name === assetName)
+    if (!asset) return null
+    const url = asset.browser_download_url as string
+
+    console.info("[earsay] downloading uv...")
+    const resp = await fetch(url)
+    if (!resp.ok || !resp.body) return null
+
+    // Download tarball to temp file, then extract
+    Bun.spawnSync(["mkdir", "-p", uvDir])
+    const tmpTar = `/tmp/earsay-uv-${Date.now()}.tar.gz`
+    const buf = await resp.arrayBuffer()
+    Bun.write(tmpTar, new Uint8Array(buf))
+    const extract = Bun.spawnSync(["tar", "-xzf", tmpTar, "-C", uvDir])
+    Bun.spawnSync(["rm", "-f", tmpTar])
+    if (extract.exitCode !== 0) return null
+    // uv binary is extracted as ./uv in the target dir
+    const extracted = `${uvDir}/uv`
+    if (!Bun.which(extracted) && Bun.spawnSync(["test", "-f", extracted]).exitCode !== 0) {
+      // Maybe it was extracted into a subdir
+      const dirs = Bun.spawnSync(["ls", uvDir])
+      const items = dirs.stdout.toString().trim().split("\n")
+      const subdir = items.find((d: string) => d.startsWith("uv-"))
+      if (subdir) {
+        const subUv = `${uvDir}/${subdir}/uv`
+        if (Bun.spawnSync(["test", "-f", subUv]).exitCode === 0) {
+          Bun.spawnSync(["mv", subUv, extracted])
+          Bun.spawnSync(["rm", "-rf", `${uvDir}/${subdir}`])
+        }
+      }
+    }
+    console.info("[earsay] uv ready.")
+    return extracted
+  } catch {
     return null
   }
-  const py312 = `${Bun.env.HOME}/.pyenv/versions/3.12/bin/python3.12`
-  if (Bun.which(py312)) return py312
-  return null
 }
 
-function installPyenvViaBrew(): boolean {
-  console.info("[earsay] installing pyenv via Homebrew...")
-  const r = Bun.spawnSync(["brew", "install", "pyenv"])
-  if (r.exitCode === 0) console.info("[earsay] pyenv installed.")
-  return r.exitCode === 0
-}
-
-function installPyenvViaGit(): boolean {
-  console.info("[earsay] cloning pyenv from GitHub...")
-  const r = Bun.spawnSync(["git", "clone", "https://github.com/pyenv/pyenv.git", `${Bun.env.HOME}/.pyenv`])
-  if (r.exitCode === 0) {
-    const pyenvBin = `${Bun.env.HOME}/pyenv/bin/pyenv`
-    process.env.PATH = `${Bun.env.HOME}/pyenv/bin:${process.env.PATH ?? ""}`
-    console.info("[earsay] pyenv cloned. Add to PATH and reload shell.")
-    return true
+async function installViaUv(uv: string): Promise<boolean> {
+  // Install Python 3.12 via uv
+  console.info("[earsay] installing Python 3.12 via uv...")
+  const pyInstall = await run([uv, "python", "install", "3.12"], { timeout: 120000 })
+  if (!pyInstall.ok) {
+    console.warn("[earsay] uv python install failed:", pyInstall.output)
+    return false
   }
-  return false
+
+  // Install earsay via uv tool
+  console.info("[earsay] installing earsay via uv...")
+  const toolInstall = await run([uv, "tool", "install", "--python", "3.12", EARSAY_REPO_URL], { timeout: 120000 })
+  if (!toolInstall.ok) {
+    console.warn("[earsay] uv tool install failed:", toolInstall.output)
+    return false
+  }
+  // uv adds to PATH via its own shims
+  return true
 }
 
 export async function ensureEarsayInstalled(): Promise<boolean> {
@@ -117,58 +192,51 @@ export async function ensureEarsayInstalled(): Promise<boolean> {
 
   const compatiblePy = findCompatiblePython()
   if (compatiblePy) {
+    console.info("[earsay] using Python:", compatiblePy)
     if (await tryInstallPipx(compatiblePy, EARSAY_REPO_URL)) {
       console.info("[earsay] earsay installed via pipx.")
       return true
     }
-    if (await tryInstallPip(compatiblePy, EARSAY_REPO_URL)) {
-      console.info("[earsay] earsay installed via pip (fallback).")
-      return true
-    }
-    console.warn("[earsay] could not install with compatible Python.")
-    return false
+    console.warn("[earsay] pipx install failed.")
+    // Fall through to uv
+  } else {
+    const probe = Bun.spawnSync(["python3", "--version"])
+    const ver = probe.exitCode === 0 ? probe.stdout.toString().trim() : "unknown"
+    console.warn("[earsay] no compatible Python (3.10-3.12) found. Current:", ver)
   }
 
-  console.warn("[earsay] no compatible Python (3.10-3.12) found. Current version:")
-  const probe = Bun.spawnSync(["python3", "--version"])
-  if (probe.exitCode === 0) console.warn("[earsay]", probe.stdout.toString().trim())
-
-  // Try to install a compatible Python via Homebrew or pyenv
-  const brew = Bun.which("brew")
-  if (brew) {
-    console.info("[earsay] installing Python 3.12 via Homebrew...")
-    const r = await run([brew, "install", "python@3.12"])
-    if (r.ok) {
-      const py312 = Bun.which("python3.12")
-      if (py312) {
-        if (await tryInstallPipx(py312, EARSAY_REPO_URL)) {
-          console.info("[earsay] earsay installed.")
+  // Fallback: download uv, use it to get Python 3.12 and install earsay
+  const uv = await downloadUv()
+  if (uv) {
+    if (await installViaUv(uv)) {
+      console.info("[earsay] earsay installed via uv.")
+      // uv stores tools in ~/.local/bin
+      const earsayPath = `${Bun.env.HOME ?? "~"}/.local/bin/earsay`
+      if (Bun.which(earsayPath)) {
+        return true
+      }
+      // Check if uv put it in its venvs directory
+      const uvEarsay = await run([uv, "tool", "dir"])
+      if (uvEarsay.ok) {
+        const toolBin = `${uvEarsay.output.trim()}/earsay/bin/earsay`
+        if (Bun.which(toolBin)) return true
+      }
+      // Try to find it
+      const findResult = await run(["find", `${Bun.env.HOME ?? "~"}`, "-name", "earsay", "-type", "f", "-maxdepth", "5"])
+      if (findResult.ok && findResult.output.length > 0) {
+        const first = findResult.output.split("\n")[0].trim()
+        if (first) {
+          // Symlink to ~/.local/bin
+          Bun.spawnSync(["mkdir", "-p", `${Bun.env.HOME ?? "~"}/.local/bin`])
+          Bun.spawnSync(["ln", "-sf", first, `${Bun.env.HOME ?? "~"}/.local/bin/earsay`])
           return true
         }
       }
     }
   }
 
-  // Try pyenv
-  if (!Bun.which("pyenv")) {
-    if (brew) {
-      installPyenvViaBrew()
-    } else {
-      await run(["pip3", "install", "pyenv", "--user"])
-    }
-  }
-
-  const py312 = installPythonViaPyenv()
-  if (py312) {
-    if (await tryInstallPipx(py312, EARSAY_REPO_URL)) {
-      console.info("[earsay] earsay installed via pyenv Python 3.12.")
-      return true
-    }
-  }
-
   console.warn("[earsay] could not install automatically.")
-  console.warn("[earsay] install a compatible Python (3.10-3.12):")
-  console.warn("  brew install python@3.12")
-  console.warn("  # or: pipx install", EARSAY_REPO_URL, "--python python3.12")
+  console.warn("[earsay] 1. Install Python 3.12 via: brew install python@3.12")
+  console.warn("[earsay] 2. Then: pipx install", EARSAY_REPO_URL)
   return false
 }
