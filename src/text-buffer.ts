@@ -58,6 +58,11 @@ export class TextBuffer {
     return this.accumulated.length > 0
   }
 
+  resetCounters(): void {
+    this.deadEvents = 0
+    this.textEvents = 0
+  }
+
   reset(): void {
     this.accumulated = ""
     this.deadEvents = 0

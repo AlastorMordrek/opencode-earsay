@@ -11,7 +11,7 @@ export class ContextInjector {
   private timer: ReturnType<typeof setInterval> | null = null
   private sessionID: string | null = null
   private lastInjected = ""
-  private hasInjected = false
+  private lastTriggerTextLength = 0
   private ticksSinceSessionRetry = 0
 
   constructor(
@@ -48,31 +48,27 @@ export class ContextInjector {
       if (!this.sessionID) return
     }
 
-    // Inject new delta as noReply
+    // inject new text as [Voice]: noReply
     if (textEvents > 0 && text.length > this.lastInjected.length) {
       const delta = text.slice(this.lastInjected.length)
       if (delta.length > 0) {
         writeLog(`injecting ${delta.length} chars`)
         await this.injectNoReply(delta)
         this.lastInjected = text
-        this.hasInjected = true
       }
     }
 
-    // Trigger on 3 text events or 3 silence events after injected text
+    // trigger on 3 consecutive text events, or 3 silence events with unharvested text
     const shouldTrigger =
-      (textEvents >= TRIGGER_TEXT_EVENTS && this.hasInjected) ||
-      (deadEvents >= TRIGGER_SILENCE_EVENTS && this.hasInjected)
+      textEvents >= TRIGGER_TEXT_EVENTS ||
+      (deadEvents >= TRIGGER_SILENCE_EVENTS && text.length > this.lastTriggerTextLength)
 
     if (shouldTrigger) {
-      writeLog("triggering LLM turn")
+      writeLog(`triggering LLM (textEvents=${textEvents}, deadEvents=${deadEvents}, textLen=${text.length})`)
       await this.triggerLLM()
-      if (this.sessionID) {
-        const result = this.buffer.cutCheckpoint(text.length)
-        await this.earsay.setCheckpoint(result.absolutePos)
-      }
-      this.lastInjected = ""
-      this.hasInjected = false
+      this.lastInjected = text
+      this.lastTriggerTextLength = text.length
+      this.buffer.resetCounters()
     }
   }
 
@@ -84,7 +80,7 @@ export class ContextInjector {
         const latest = list[list.length - 1]
         if (latest?.id) {
           this.sessionID = latest.id
-          writeLog(`session ID retry: ${latest.id}`)
+          writeLog(`session ID retry success: ${latest.id}`)
         }
       }
     } catch {

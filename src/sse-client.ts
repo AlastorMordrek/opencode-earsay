@@ -10,6 +10,10 @@ export interface SSEClientOptions {
   fullchunk?: boolean
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
 export class SSEClient {
   private abortController: AbortController | null = null
   private ticket: string | null = null
@@ -30,60 +34,66 @@ export class SSEClient {
     const ac = new AbortController()
     this.abortController = ac
 
-    const params = new URLSearchParams()
-    params.set("chars", String(opts.chars ?? 30))
-    params.set("timeout", String(opts.timeout ?? 2000))
-    if (opts.fullchunk) params.set("fullchunk", "true")
+    while (!ac.signal.aborted) {
+      const params = new URLSearchParams()
+      params.set("chars", String(opts.chars ?? 30))
+      params.set("timeout", String(opts.timeout ?? 2000))
+      if (opts.fullchunk) params.set("fullchunk", "true")
 
-    try {
-      const response = await fetch(`${baseUrl}/subscribe?${params}`, {
-        method: "POST",
-        signal: ac.signal,
-      })
+      try {
+        const response = await fetch(`${baseUrl}/subscribe?${params}`, {
+          method: "POST",
+          signal: ac.signal,
+        })
 
-      if (!response.ok) {
-        throw new Error(`SSE subscription failed: ${response.status}`)
-      }
+        if (!response.ok) {
+          throw new Error(`SSE subscription failed: ${response.status}`)
+        }
 
-      if (!response.body) {
-        throw new Error("SSE response body is null")
-      }
+        if (!response.body) {
+          throw new Error("SSE response body is null")
+        }
 
-      this.connected = true
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ""
+        this.connected = true
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
 
-        const lines = buffer.split("\n")
-        buffer = lines.pop() ?? ""
+          const lines = buffer.split("\n")
+          buffer = lines.pop() ?? ""
 
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (trimmed.startsWith("data: ")) {
-            const raw = trimmed.slice(6)
-            try {
-              const event = JSON.parse(raw) as SSEEvent
-              if (event.ticket) {
-                this.ticket = event.ticket
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (trimmed.startsWith("data: ")) {
+              const raw = trimmed.slice(6)
+              try {
+                const event = JSON.parse(raw) as SSEEvent
+                if (event.ticket) {
+                  this.ticket = event.ticket
+                }
+                onEvent(event)
+              } catch {
+                // skip malformed events
               }
-              onEvent(event)
-            } catch {
-              // skip malformed events
             }
           }
         }
+      } catch (err) {
+        this.connected = false
+        if (ac.signal.aborted) return
+        onError?.(err instanceof Error ? err : new Error(String(err)))
       }
-    } catch (err) {
+
       this.connected = false
       if (ac.signal.aborted) return
-      onError?.(err instanceof Error ? err : new Error(String(err)))
+
+      await sleep(3000)
     }
-    this.connected = false
   }
 
   unsubscribe(): void {
