@@ -104,6 +104,7 @@ function onSSEEvent(event: { text?: string }): void {
 }
 
 function setSessionID(sid: string | null): void {
+  if (sid === sessionID) return
   writeLog(`[setSessionID] sid=${sid} was=${sessionID} accLen=${buffer.allText().length} lastInjected=${lastInjectedLength} lastTrigger=${lastTriggerTextLength}`)
   sessionID = sid
   if (!sid) return
