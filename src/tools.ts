@@ -9,6 +9,7 @@ export interface ToolDeps {
   earsay: EarsayManager
   buffer: TextBuffer
   sse: SSEClient
+  onSSEEvent: (event: { text?: string }) => void
 }
 
 export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof tool>> {
@@ -103,7 +104,7 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
         try {
           sse.subscribe(
             earsay.baseUrl,
-            (event) => buffer.onEvent(event.text || ""),
+            deps.onSSEEvent,
             (err) => writeLog(`SSE error: ${err.message}`),
             { chars: 30, timeout: 3000, fullchunk: true },
           )

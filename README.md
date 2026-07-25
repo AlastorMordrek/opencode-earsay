@@ -96,7 +96,7 @@ Nothing to start. Once opencode restarts, the plugin is live.
 
 ## How It Works
 
-Four components work together:
+Three components work together:
 
 **EarSay** (STT daemon) — a Python process that captures microphone audio,
 runs it through faster-whisper, and makes the transcription available via an
@@ -111,12 +111,13 @@ disconnect with a 3-second retry delay.
 consecutive text events and silence (empty) events have arrived. Supports
 checkpoint operations that let the LLM mark portions as consumed.
 
-**Context injector** — runs a 1-second tick loop. On each tick: if new text
-has arrived, it injects a `[Voice]:` message into the session (as `noReply`
-so it doesn't visibly affect the TUI). When the text has grown AND enough
-events have accumulated (3 text events or 3 silence events), it triggers an
-LLM turn with an empty user prompt — the voice messages are already in
-context for the LLM to analyze.
+**Event handler** — fires immediately on each SSE event. If new text arrived,
+it injects a `[Voice]:` message into the session (as `noReply` so it doesn't
+visibly affect the TUI). When the text has grown AND enough events have
+accumulated (3 text events or 3 silence events), it triggers an LLM turn with
+an empty user prompt — the voice messages are already in context for the LLM
+to analyze. If speech starts before a session exists, text buffers until the
+session becomes available, then flushes in one shot.
 
 The LLM sees the conversation history like this:
 

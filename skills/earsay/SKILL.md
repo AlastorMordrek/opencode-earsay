@@ -2,9 +2,9 @@
 name: earsay-voice
 description: >
   Voice input via earsay — always-on continuous speech-to-text. The plugin
-  auto-starts, auto-injects growing voice text into session context, and
-  triggers an LLM turn after 3 text events or 3 silence events. The LLM
-  analyzes the accumulated [Voice]: messages and decides whether to act.
+  auto-starts, auto-injects growing voice text into session context on each
+  SSE event, and triggers an LLM turn when new text AND 3+ events accumulate.
+  The LLM analyzes the accumulated [Voice]: messages and decides whether to act.
 ---
 
 # Earsay Voice Input
@@ -16,8 +16,9 @@ On plugin load:
 2. earsay server auto-starts on port 3009
 3. SSE subscription (delta mode, 30 chars / 3s timeout) begins immediately
 4. `[Voice]:` text is injected into session context as `noReply` messages
-5. On each tick (1s), if new text has arrived AND 3+ events accumulated (text or silence),
-   a trigger prompt is sent to the LLM with the `[Voice]:` context
+5. On each SSE event (fired at 30 chars or 3s silence), if new text has arrived
+   AND 3+ events have accumulated (text or silence), a trigger prompt is sent to
+   the LLM with the `[Voice]:` context
 
 ## What the LLM Sees
 
