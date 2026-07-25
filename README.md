@@ -13,7 +13,7 @@ The plugin auto-installs the EarSay STT daemon (Python + faster-whisper), starts
                 └────────────────────────┬─────────────────────────┘
                                          │ SSE (delta mode, 30 chars / 3s timeout)
                                          ▼
-Plugin loads ─→ auto-installs EarSay (uv or pipx) ─→ auto-starts server ─→ subscribes to SSE
+Plugin loads ─→ auto-installs EarSay (pipx → uv → manual) ─→ auto-starts server ─→ subscribes to SSE
                                                                        │
                                       ┌────────────────────────────────┘
                                       ▼
@@ -90,7 +90,7 @@ cp skills/earsay/SKILL.md ~/.config/opencode/skills/earsay/SKILL.md
 # 6. Restart opencode
 ```
 
-On restart, the plugin auto-installs EarSay (Python 3.12 + faster-whisper via uv), starts the server, and subscribes to the speech stream. No manual commands needed.
+On restart, the plugin auto-installs EarSay (Python 3.12 + faster-whisper via pipx or uv), starts the server, and subscribes to the speech stream. No manual commands needed.
 
 ## Usage
 
@@ -131,8 +131,8 @@ Environment variables (set before starting opencode):
 | `EARSAY_PORT` | `3009` | HTTP server port |
 | `EARSAY_MODEL` | `tiny.en` | Whisper model size |
 | `EARSAY_CHARS_THRESHOLD` | `30` | SSE chars threshold for text events |
-| `EARSAY_DISABLE_AUTO_INSTALL` | *(unset)* | Set to `"true"` to skip auto-install of earsay |
-| `EARSAY_DISABLE_AUTO_START` | *(unset)* | Set to `"true"` to skip auto-start of the server |
+| `EARSAY_AUTO_INSTALL` | `"true"` | Set to `"false"` to skip auto-install of earsay |
+| `EARSAY_AUTO_START` | `"true"` | Set to `"false"` to skip auto-start of the server |
 
 ## Crash Safety
 
@@ -146,7 +146,7 @@ The tools are always registered. If the server is down, `voice_start` retries.
 opencode-earsay/
 ├── src/
 │   ├── index.ts              # Entry — crash-safe init, auto-install/start/SSE
-│   ├── installer.ts          # EarSay auto-installer (uv → pipx → manual)
+│   ├── installer.ts          # EarSay auto-installer (pipx → uv → manual)
 │   ├── earsay-manager.ts     # Subprocess lifecycle + HTTP API proxy
 │   ├── sse-client.ts         # SSE subscription with auto-reconnect
 │   ├── text-buffer.ts        # Accumulated text buffer + checkpoint management
