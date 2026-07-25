@@ -2,6 +2,8 @@ import { tool } from "@opencode-ai/plugin"
 import type { EarsayManager } from "./earsay-manager"
 import type { TextBuffer } from "./text-buffer"
 import type { SSEClient } from "./sse-client"
+import { fileExists, removeDir, removeFile } from "./util"
+import { spawnSync } from "node:child_process"
 
 export interface ToolDeps {
   earsay: EarsayManager
@@ -214,8 +216,7 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
           if (earsay.isRunning) await earsay.stop()
           const home = process.env.HOME ?? ""
           const markerPath = `${home}/.earsay/.plugin-installed`
-          const markerExists = Bun.spawnSync(["test", "-f", markerPath]).exitCode === 0
-          if (markerExists) {
+          if (fileExists(markerPath)) {
             return JSON.stringify({
               status: "needs_confirm",
               message: "This plugin installed earsay. Remove earsay too?",
@@ -245,13 +246,13 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
           const home = process.env.HOME ?? ""
           const uv = `${home}/.earsay/bin/uv`
 
-          if (Bun.spawnSync(["test", "-f", uv]).exitCode === 0) {
-            Bun.spawnSync([uv, "tool", "uninstall", "earsay"])
-            Bun.spawnSync([uv, "python", "uninstall", "3.12"])
+          if (fileExists(uv)) {
+            spawnSync(uv, ["tool", "uninstall", "earsay"])
+            spawnSync(uv, ["python", "uninstall", "3.12"])
           }
 
-          Bun.spawnSync(["rm", "-rf", `${home}/.earsay`])
-          Bun.spawnSync(["rm", "-f", `${home}/.local/bin/earsay`])
+          removeDir(`${home}/.earsay`)
+          removeFile(`${home}/.local/bin/earsay`)
 
           return JSON.stringify({
             status: "done",

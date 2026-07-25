@@ -1,3 +1,7 @@
+import type { ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
+import { which } from "./util"
+
 export interface EarsayStatus {
   status: "listening" | "paused" | "stopped"
   uptime_seconds: number
@@ -13,7 +17,7 @@ export interface EarsayManagerOptions {
 }
 
 export class EarsayManager {
-  private proc: Bun.Subprocess | null = null
+  private proc: ChildProcess | null = null
   private port: number
   private model: string
   private running = false
@@ -38,24 +42,23 @@ export class EarsayManager {
       this.running = true
       return true
     }
-    const bin = Bun.which("earsay")
+    const bin = which("earsay")
     if (!bin) {
       console.warn("[earsay] earsay binary not found. Install: pip install earsay")
       return false
     }
-    const proc = Bun.spawn([bin, "listen", "--port", String(this.port), "--model", this.model], {
-      stdout: "pipe",
-      stderr: "pipe",
+    const proc = spawn(bin, ["listen", "--port", String(this.port), "--model", this.model], {
+      stdio: ["pipe", "pipe", "pipe"],
     })
     this.proc = proc
-    this.proc.unref()
+    proc.unref()
 
     const relayStderr = async () => {
       const stderr = proc.stderr
-      if (!stderr || typeof stderr === "number") return
+      if (!stderr) return
       const decoder = new TextDecoder()
       try {
-        for await (const chunk of stderr as ReadableStream<Uint8Array>) {
+        for await (const chunk of stderr as AsyncIterable<Buffer>) {
           const text = decoder.decode(chunk, { stream: true })
           for (const line of text.split("\n").filter(Boolean)) {
             console.info("[earsay]", line.trimEnd())
@@ -76,8 +79,8 @@ export class EarsayManager {
         console.info("[earsay] server ready on port", this.port)
         return true
       }
-      if (this.proc && this.proc.exitCode !== null) {
-        console.warn("[earsay] process exited early with code", this.proc.exitCode)
+      if (this.proc && proc.exitCode !== null) {
+        console.warn("[earsay] process exited early with code", proc.exitCode)
         return false
       }
     }
@@ -89,8 +92,12 @@ export class EarsayManager {
     if (!this.running) return
     await this.api("POST", "/stop").catch(() => {})
     if (this.proc) {
-      this.proc.kill()
-      await this.proc.exited.catch(() => {})
+      const p = this.proc
+      p.kill()
+      await new Promise<void>((resolve) => {
+        p.once("close", () => resolve())
+        setTimeout(() => resolve(), 2000)
+      }).catch(() => {})
       this.proc = null
     }
     this.running = false
