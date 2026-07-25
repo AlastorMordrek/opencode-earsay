@@ -200,6 +200,69 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
       },
     }),
 
+    voice_uninstall: tool({
+      description: [
+        "Uninstall the voice plugin and optionally earsay itself.",
+        "Stops the server, checks whether this plugin installed earsay",
+        "(via a marker file), and asks for confirmation before removing earsay.",
+        "If earsay pre-existed before this plugin, it is left intact.",
+        "Run voice_uninstall_confirm after this tool to proceed with removal.",
+      ].join(" "),
+      args: {},
+      async execute() {
+        try {
+          if (earsay.isRunning) await earsay.stop()
+          const home = process.env.HOME ?? ""
+          const markerPath = `${home}/.earsay/.plugin-installed`
+          const markerExists = Bun.spawnSync(["test", "-f", markerPath]).exitCode === 0
+          if (markerExists) {
+            return JSON.stringify({
+              status: "needs_confirm",
+              message: "This plugin installed earsay. Remove earsay too?",
+              confirmTool: "voice_uninstall_confirm",
+            })
+          }
+          return JSON.stringify({
+            status: "done",
+            message: "Plugin stopped. earsay left intact (pre-existed or manually installed).",
+          })
+        } catch (err) {
+          return JSON.stringify({ status: "error", message: String(err) })
+        }
+      },
+    }),
+
+    voice_uninstall_confirm: tool({
+      description: [
+        "Confirm and execute full earsay removal.",
+        "Only run this after voice_uninstall asked for confirmation.",
+        "Removes: earsay via uv tool, Python 3.12 via uv, ~/.earsay/, ~/.local/bin/earsay.",
+      ].join(" "),
+      args: {},
+      async execute() {
+        try {
+          if (earsay.isRunning) await earsay.stop()
+          const home = process.env.HOME ?? ""
+          const uv = `${home}/.earsay/bin/uv`
+
+          if (Bun.spawnSync(["test", "-f", uv]).exitCode === 0) {
+            Bun.spawnSync([uv, "tool", "uninstall", "earsay"])
+            Bun.spawnSync([uv, "python", "uninstall", "3.12"])
+          }
+
+          Bun.spawnSync(["rm", "-rf", `${home}/.earsay`])
+          Bun.spawnSync(["rm", "-f", `${home}/.local/bin/earsay`])
+
+          return JSON.stringify({
+            status: "done",
+            message: "earsay removed. Remove plugin files from ~/.config/opencode/plugins/ to finish.",
+          })
+        } catch (err) {
+          return JSON.stringify({ status: "error", message: String(err) })
+        }
+      },
+    }),
+
     voice_status: tool({
       description: "Get the status of the earsay server and the text buffer.",
       args: {},

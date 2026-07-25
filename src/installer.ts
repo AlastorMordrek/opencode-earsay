@@ -93,7 +93,12 @@ export async function ensureEarsayInstalled(): Promise<boolean> {
   if (py && Bun.which("pipx")) {
     console.info("[earsay] installing via pipx...")
     const r = await run([py, "-m", "pipx", "install", EARSAY_REPO_URL])
-    if (r.ok) { console.info("[earsay] earsay installed."); return true }
+    if (r.ok) {
+      Bun.spawnSync(["mkdir", "-p", `${Bun.env.HOME}/.earsay`])
+      Bun.spawnSync(["touch", `${Bun.env.HOME}/.earsay/.plugin-installed`])
+      console.info("[earsay] earsay installed.")
+      return true
+    }
   }
 
   const uv = await downloadUv()
@@ -112,6 +117,9 @@ export async function ensureEarsayInstalled(): Promise<boolean> {
   console.info("[earsay] installing earsay via uv...")
   const ti = await run([uv, "tool", "install", "--python", "3.12", EARSAY_REPO_URL])
   if (!ti.ok) { console.warn("[earsay] uv tool install failed:", ti.output); return false }
+
+  Bun.spawnSync(["mkdir", "-p", `${Bun.env.HOME}/.earsay`])
+  Bun.spawnSync(["touch", `${Bun.env.HOME}/.earsay/.plugin-installed`])
 
   return !!Bun.which("earsay")
 }
