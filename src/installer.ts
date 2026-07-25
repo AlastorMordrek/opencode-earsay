@@ -100,6 +100,11 @@ async function downloadUv(): Promise<string | null> {
   const uvPath = `${uvDir}/uv`
   if (Bun.which(uvPath)) return uvPath
 
+  if (!Bun.which("curl")) {
+    console.warn("[earsay] curl not found, cannot download uv.")
+    return null
+  }
+
   // Detect platform
   const uname = Bun.spawnSync(["uname", "-sm"])
   if (uname.exitCode !== 0) return null
@@ -115,54 +120,46 @@ async function downloadUv(): Promise<string | null> {
     return null
   }
 
-  // Fetch latest release tag
-  try {
-    const req = await fetch(
-      "https://api.github.com/repos/astral-sh/uv/releases/latest",
-      { headers: { "Accept": "application/json", "User-Agent": "earsay-installer" } },
-    )
-    if (!req.ok) return null
-    const release: any = await req.json()
-    const tag = release.tag_name as string
+  // Fetch latest release tag via curl
+  console.info("[earsay] downloading uv...")
+  const tmpTar = `/tmp/earsay-uv-${Date.now()}.tar.gz`
 
-    // Find asset for this platform
-    const assetName = `uv-${target}.tar.gz`
-    const asset = release.assets?.find((a: any) => a.name === assetName)
-    if (!asset) return null
-    const url = asset.browser_download_url as string
+  const releaseResp = await run([
+    "curl", "-sL",
+    "-H", "Accept: application/json",
+    "https://api.github.com/repos/astral-sh/uv/releases/latest",
+  ])
+  if (!releaseResp.ok) return null
+  let release: any
+  try { release = JSON.parse(releaseResp.output) } catch { return null }
+  const assetName = `uv-${target}.tar.gz`
+  const asset = release.assets?.find((a: any) => a.name === assetName)
+  if (!asset) return null
 
-    console.info("[earsay] downloading uv...")
-    const resp = await fetch(url)
-    if (!resp.ok || !resp.body) return null
+  // Download tarball with curl
+  const dl = await run(["curl", "-sL", "-o", tmpTar, asset.browser_download_url])
+  if (!dl.ok) { Bun.spawnSync(["rm", "-f", tmpTar]); return null }
 
-    // Download tarball to temp file, then extract
-    Bun.spawnSync(["mkdir", "-p", uvDir])
-    const tmpTar = `/tmp/earsay-uv-${Date.now()}.tar.gz`
-    const buf = await resp.arrayBuffer()
-    Bun.write(tmpTar, new Uint8Array(buf))
-    const extract = Bun.spawnSync(["tar", "-xzf", tmpTar, "-C", uvDir])
-    Bun.spawnSync(["rm", "-f", tmpTar])
-    if (extract.exitCode !== 0) return null
-    // uv binary is extracted as ./uv in the target dir
-    const extracted = `${uvDir}/uv`
-    if (!Bun.which(extracted) && Bun.spawnSync(["test", "-f", extracted]).exitCode !== 0) {
-      // Maybe it was extracted into a subdir
-      const dirs = Bun.spawnSync(["ls", uvDir])
-      const items = dirs.stdout.toString().trim().split("\n")
-      const subdir = items.find((d: string) => d.startsWith("uv-"))
-      if (subdir) {
-        const subUv = `${uvDir}/${subdir}/uv`
-        if (Bun.spawnSync(["test", "-f", subUv]).exitCode === 0) {
-          Bun.spawnSync(["mv", subUv, extracted])
-          Bun.spawnSync(["rm", "-rf", `${uvDir}/${subdir}`])
-        }
-      }
-    }
-    console.info("[earsay] uv ready.")
-    return extracted
-  } catch {
-    return null
+  // Extract
+  Bun.spawnSync(["mkdir", "-p", uvDir])
+  const extract = Bun.spawnSync(["tar", "-xzf", tmpTar, "-C", uvDir])
+  Bun.spawnSync(["rm", "-f", tmpTar])
+  if (extract.exitCode !== 0) return null
+
+  // mv uv from extracted subdir to target path
+  const lsOut = Bun.spawnSync(["ls", uvDir])
+  const items = lsOut.stdout.toString().trim().split("\n")
+  const subdir = items.find((d: string) => d !== "uv" && d.startsWith("uv-"))
+  if (subdir) {
+    Bun.spawnSync(["mv", `${uvDir}/${subdir}/uv`, uvPath])
+    Bun.spawnSync(["rm", "-rf", `${uvDir}/${subdir}`])
   }
+
+  if (Bun.which(uvPath)) {
+    console.info("[earsay] uv ready.")
+    return uvPath
+  }
+  return null
 }
 
 async function installViaUv(uv: string): Promise<boolean> {
