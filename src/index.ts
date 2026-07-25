@@ -50,6 +50,10 @@ async function triggerLLM(textLength?: number): Promise<void> {
     writeLog(`[trigger] skip — no session`)
     return
   }
+  if (textLength !== undefined) {
+    lastTriggerTextLength = textLength
+    buffer.resetCounters()
+  }
   try {
     await client.session.prompt({
       path: { id: sessionID },
@@ -57,10 +61,6 @@ async function triggerLLM(textLength?: number): Promise<void> {
         parts: [{ type: "text", text: "" }],
       },
     })
-    if (textLength !== undefined) {
-      lastTriggerTextLength = textLength
-      buffer.resetCounters()
-    }
     writeLog(`[trigger] success lastTrigger=${lastTriggerTextLength}`)
   } catch (err) {
     writeLog(`[trigger] failed: ${err}`)
