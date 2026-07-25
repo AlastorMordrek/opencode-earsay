@@ -37,11 +37,17 @@ export class EarsayManager {
 
   async start(): Promise<boolean> {
     if (this.running) return true
-    const ok = await this.ping()
-    if (ok) {
-      this.running = true
-      return true
+
+    // If something responds on the port, kill it first (stale server)
+    if (await this.ping()) {
+      writeLog("existing server on port, stopping before restart")
+      await this.api("POST", "/stop").catch(() => {})
+      for (let i = 0; i < 30; i++) {
+        await sleep(1000)
+        if (!(await this.ping())) break
+      }
     }
+
     const bin = which("earsay")
     if (!bin) {
       writeLog("earsay binary not found. Install: pip install earsay")
