@@ -5,6 +5,7 @@ import { TextBuffer } from "./text-buffer"
 import { ContextInjector } from "./context-injector"
 import { ensureEarsayInstalled } from "./installer"
 import { createTools } from "./tools"
+import { writeLog } from "./util"
 
 const EARSAY_PORT = parseInt(process.env.EARSAY_PORT ?? "3009", 10)
 const EARSAY_MODEL = process.env.EARSAY_MODEL ?? "tiny.en"
@@ -31,10 +32,10 @@ export const OpencodeEarsayPlugin: Plugin = async ({ client }) => {
           sse.subscribe(
             earsay.baseUrl,
             (event) => buffer.onEvent(event.text || ""),
-            (err) => console.warn("[earsay] SSE error:", err.message),
+            (err) => writeLog(`SSE error: ${err.message}`),
             { chars: CHARS_THRESHOLD, timeout: 3000, fullchunk: false },
           )
-          console.info("[earsay] active.")
+          writeLog("active")
         }
       }
 
@@ -55,7 +56,7 @@ export const OpencodeEarsayPlugin: Plugin = async ({ client }) => {
         // event hook will pick it up
       }
     } catch (err) {
-      console.error("[earsay] init error (plugin continues):", err)
+      writeLog(`init error (plugin continues): ${err}`)
     }
   })()
 

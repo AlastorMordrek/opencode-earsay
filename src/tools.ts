@@ -2,7 +2,7 @@ import { tool } from "@opencode-ai/plugin"
 import type { EarsayManager } from "./earsay-manager"
 import type { TextBuffer } from "./text-buffer"
 import type { SSEClient } from "./sse-client"
-import { fileExists, removeDir, removeFile } from "./util"
+import { which, writeLog, fileExists, removeDir, removeFile } from "./util"
 import { spawnSync } from "node:child_process"
 
 export interface ToolDeps {
@@ -19,7 +19,7 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
     try {
       return await earsay.start()
     } catch (err) {
-      console.warn("[earsay] start error:", err)
+      writeLog(`start error: ${err}`)
       return false
     }
   }
@@ -104,7 +104,7 @@ export function createTools(deps: ToolDeps): Record<string, ReturnType<typeof to
           sse.subscribe(
             earsay.baseUrl,
             (event) => buffer.onEvent(event.text || ""),
-            (err) => console.warn("[earsay] SSE error:", err.message),
+            (err) => writeLog(`SSE error: ${err.message}`),
             { chars: 30, timeout: 3000, fullchunk: true },
           )
           return JSON.stringify({ status: "subscribed" })

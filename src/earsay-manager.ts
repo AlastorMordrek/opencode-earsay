@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process"
 import { spawn } from "node:child_process"
-import { which } from "./util"
+import { which, writeLog } from "./util"
 
 export interface EarsayStatus {
   status: "listening" | "paused" | "stopped"
@@ -44,7 +44,7 @@ export class EarsayManager {
     }
     const bin = which("earsay")
     if (!bin) {
-      console.warn("[earsay] earsay binary not found. Install: pip install earsay")
+      writeLog("earsay binary not found. Install: pip install earsay")
       return false
     }
     const proc = spawn(bin, ["listen", "--port", String(this.port), "--model", this.model], {
@@ -61,7 +61,7 @@ export class EarsayManager {
         for await (const chunk of stderr as AsyncIterable<Buffer>) {
           const text = decoder.decode(chunk, { stream: true })
           for (const line of text.split("\n").filter(Boolean)) {
-            console.info("[earsay]", line.trimEnd())
+            writeLog(`[stderr] ${line.trimEnd()}`)
           }
         }
       } catch {
@@ -76,15 +76,15 @@ export class EarsayManager {
       await sleep(intervalMs)
       if (await this.ping()) {
         this.running = true
-        console.info("[earsay] server ready on port", this.port)
+        writeLog(`server ready on port ${this.port}`)
         return true
       }
       if (this.proc && proc.exitCode !== null) {
-        console.warn("[earsay] process exited early with code", proc.exitCode)
+        writeLog(`process exited early with code ${proc.exitCode}`)
         return false
       }
     }
-    console.warn("[earsay] server did not respond within 90s")
+    writeLog("server did not respond within 90s")
     return false
   }
 

@@ -71,3 +71,11 @@ export function touch(path: string): void {
     fs.writeFileSync(path, "", "utf-8")
   } catch {}
 }
+
+export function writeLog(msg: string): void {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
+  const paths = [`${process.env.HOME}/.earsay/plugin.log`, "/tmp/earsay-plugin.log"]
+  for (const p of paths) {
+    try { fs.appendFileSync(p, line, "utf-8"); return } catch {}
+  }
+}

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { which, spawnAsync, readDir, fileExists, mkdir, touch, removeFile } from "./util"
+import { which, spawnAsync, readDir, fileExists, mkdir, touch, removeFile, writeLog } from "./util"
 
 const EARSAY_REPO_URL = "git+https://github.com/AlastorMordrek/earsay.git"
 const COMPATIBLE_PYTHON_RANGE = { min: 10, max: 12 }
@@ -43,7 +43,7 @@ async function downloadUv(): Promise<string | null> {
   const uvDir = `${HOME}/.earsay/bin`
   const uvPath = `${uvDir}/uv`
   if (fileExists(uvPath)) return uvPath
-  if (!which("curl")) { console.warn("[earsay] curl not found"); return null }
+  if (!which("curl")) { writeLog("curl not found"); return null }
 
   const [kernel, archRaw] = spawnSync("uname", ["-sm"]).stdout.toString().trim().split(" ")
   const arch = archRaw?.toLowerCase() === "arm64" ? "aarch64" : "x86_64"
@@ -52,7 +52,7 @@ async function downloadUv(): Promise<string | null> {
     : null
   if (!target) return null
 
-  console.info("[earsay] downloading uv...")
+  writeLog("downloading uv...")
   const releaseResp = await spawnAsync(["curl", "-sL", "-H", "Accept: application/json",
     "https://api.github.com/repos/astral-sh/uv/releases/latest"])
   if (!releaseResp.ok) return null
@@ -84,32 +84,29 @@ export async function ensureEarsayInstalled(): Promise<boolean> {
 
   const py = findCompatiblePython()
   if (py && which("pipx")) {
-    console.info("[earsay] installing via pipx...")
+    writeLog("installing via pipx...")
     const r = await spawnAsync([py, "-m", "pipx", "install", EARSAY_REPO_URL])
     if (r.ok) {
       mkdir(`${HOME}/.earsay`)
       touch(`${HOME}/.earsay/.plugin-installed`)
-      console.info("[earsay] earsay installed.")
+      writeLog("earsay installed via pipx")
       return true
     }
   }
 
   const uv = await downloadUv()
   if (!uv) {
-    console.warn("[earsay] could not download uv.")
-    console.warn("[earsay] install earsay manually:")
-    console.warn("  git clone https://github.com/AlastorMordrek/earsay.git")
-    console.warn("  cd earsay && ./install.sh")
+    writeLog("could not download uv. install earsay manually: git clone https://github.com/AlastorMordrek/earsay.git && cd earsay && ./install.sh")
     return false
   }
 
-  console.info("[earsay] installing Python 3.12 via uv...")
+  writeLog("installing Python 3.12 via uv...")
   const pi = await spawnAsync([uv, "python", "install", "3.12"])
-  if (!pi.ok) { console.warn("[earsay] uv python install failed:", pi.output); return false }
+  if (!pi.ok) { writeLog(`uv python install failed: ${pi.output}`); return false }
 
-  console.info("[earsay] installing earsay via uv...")
+  writeLog("installing earsay via uv...")
   const ti = await spawnAsync([uv, "tool", "install", "--python", "3.12", EARSAY_REPO_URL])
-  if (!ti.ok) { console.warn("[earsay] uv tool install failed:", ti.output); return false }
+  if (!ti.ok) { writeLog(`uv tool install failed: ${ti.output}`); return false }
 
   mkdir(`${HOME}/.earsay`)
   touch(`${HOME}/.earsay/.plugin-installed`)

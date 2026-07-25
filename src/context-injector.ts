@@ -1,15 +1,18 @@
 import type { EarsayManager } from "./earsay-manager"
 import type { TextBuffer } from "./text-buffer"
+import { writeLog } from "./util"
 
 const TRIGGER_TEXT_EVENTS = 3
 const TRIGGER_SILENCE_EVENTS = 3
 const TICK_INTERVAL_MS = 1000
+const SESSION_RETRY_TICKS = 5
 
 export class ContextInjector {
   private timer: ReturnType<typeof setInterval> | null = null
   private sessionID: string | null = null
   private lastInjected = ""
   private hasInjected = false
+  private ticksSinceSessionRetry = 0
 
   constructor(
     private buffer: TextBuffer,
@@ -35,12 +38,21 @@ export class ContextInjector {
   private async tick(): Promise<void> {
     const prog = this.buffer.getProgressive()
     const { text, deadEvents, textEvents } = prog
-    if (!this.sessionID) return
+
+    if (!this.sessionID) {
+      this.ticksSinceSessionRetry++
+      if (this.ticksSinceSessionRetry >= SESSION_RETRY_TICKS) {
+        this.ticksSinceSessionRetry = 0
+        await this.retrySessionID()
+      }
+      if (!this.sessionID) return
+    }
 
     // Inject new delta as noReply
     if (textEvents > 0 && text.length > this.lastInjected.length) {
       const delta = text.slice(this.lastInjected.length)
       if (delta.length > 0) {
+        writeLog(`injecting ${delta.length} chars`)
         await this.injectNoReply(delta)
         this.lastInjected = text
         this.hasInjected = true
@@ -53,6 +65,7 @@ export class ContextInjector {
       (deadEvents >= TRIGGER_SILENCE_EVENTS && this.hasInjected)
 
     if (shouldTrigger) {
+      writeLog("triggering LLM turn")
       await this.triggerLLM()
       if (this.sessionID) {
         const result = this.buffer.cutCheckpoint(text.length)
@@ -60,6 +73,22 @@ export class ContextInjector {
       }
       this.lastInjected = ""
       this.hasInjected = false
+    }
+  }
+
+  private async retrySessionID(): Promise<void> {
+    try {
+      const sessions = await this.client.session.list()
+      const list = Array.isArray(sessions) ? sessions : sessions?.data ?? []
+      if (list.length > 0) {
+        const latest = list[list.length - 1]
+        if (latest?.id) {
+          this.sessionID = latest.id
+          writeLog(`session ID retry: ${latest.id}`)
+        }
+      }
+    } catch {
+      // session server not ready yet
     }
   }
 
@@ -72,8 +101,8 @@ export class ContextInjector {
           parts: [{ type: "text", text: `[Voice]: ${delta}` }],
         },
       })
-    } catch {
-      // session not ready, will retry next tick
+    } catch (err) {
+      writeLog(`injectNoReply failed: ${err}`)
     }
   }
 
@@ -85,8 +114,8 @@ export class ContextInjector {
           parts: [{ type: "text", text: "" }],
         },
       })
-    } catch {
-      // session not ready, will retry next tick
+    } catch (err) {
+      writeLog(`triggerLLM failed: ${err}`)
     }
   }
 }
