@@ -151,28 +151,17 @@ function checkTrigger(text: string): void {
     `fire=${condTextGrown && (condTextEv || condDeadEv)}`,
   )
   if (condTextGrown && (condTextEv || condDeadEv)) {
+    const delta = text.slice(lastInjectedLength)
+    if (delta.length > 0) {
+      injectNoReply(delta, text.length)
+    }
     triggerLLM(text.length)
   }
 }
 
 function onSSEEvent(event: { text?: string }): void {
   buffer.onEvent(event.text || "")
-
-  const text = buffer.allText()
-  const needsInject = text.length > lastInjectedLength
-  const delta = needsInject ? text.slice(lastInjectedLength) : ""
-
-  writeLog(
-    `[onSSEEvent] eventTextLen=${(event.text || "").length} ` +
-    `accLen=${text.length} needsInject=${needsInject} deltaLen=${delta.length} ` +
-    `lastInjected=${lastInjectedLength} lastTrigger=${lastTriggerTextLength} sessionID=${!!sessionID}`,
-  )
-
-  if (needsInject && delta.length > 0) {
-    injectNoReply(delta, text.length).then(() => checkTrigger(text))
-  } else {
-    checkTrigger(text)
-  }
+  checkTrigger(buffer.allText())
 }
 
 export const OpencodeEarsayPlugin: Plugin = async ({ client: c }) => {
