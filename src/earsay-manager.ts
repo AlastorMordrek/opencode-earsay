@@ -129,8 +129,9 @@ export class EarsayManager {
     }
   }
 
-  async setCheckpoint(absolutePos: number): Promise<boolean> {
-    const res = await this.api("POST", `/checkpoint?at=${absolutePos}`)
+  async setCheckpoint(absolutePos?: number): Promise<boolean> {
+    const url = absolutePos !== undefined ? `/checkpoint?at=${absolutePos}` : `/checkpoint`
+    const res = await this.api("POST", url)
     return res !== null
   }
 

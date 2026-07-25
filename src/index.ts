@@ -19,9 +19,81 @@ const buffer = new TextBuffer()
 const sse = new SSEClient()
 
 let sessionID: string | null = null
+let activeSession: string | null = null
 let lastInjectedLength = 0
 let lastTriggerTextLength = 0
+let attachPromise: Promise<void> | null = null
+let wasDeferred = false
 let client: any = null
+
+async function attachToSession(sid: string): Promise<void> {
+  if (sid === activeSession) {
+    writeLog(`[attachToSession] skip — already active for ${sid}`)
+    return
+  }
+
+  if (attachPromise) {
+    writeLog(`[attachToSession] waiting for previous attach to complete`)
+    await attachPromise
+    if (sid === activeSession) {
+      writeLog(`[attachToSession] skip — became active while waiting`)
+      return
+    }
+  }
+
+  if (!earsay.isRunning) {
+    sessionID = sid
+    activeSession = null
+    wasDeferred = true
+    sse.unsubscribe()
+    buffer.reset()
+    writeLog(`[attachToSession] deferred — server not running, sid=${sid}`)
+    return
+  }
+
+  writeLog(`[attachToSession] enter sid=${sid} from=${activeSession}`)
+
+  sse.unsubscribe()
+  buffer.reset()
+
+  activeSession = sid
+  sessionID = sid
+  lastInjectedLength = 0
+  lastTriggerTextLength = 0
+
+  attachPromise = (async () => {
+    await earsay.setCheckpoint().catch(() => writeLog(`[attachToSession] checkpoint failed`))
+    buffer.reset()
+
+    sse.subscribe(
+      earsay.baseUrl,
+      onSSEEvent,
+      (err) => writeLog(`SSE error: ${err.message}`),
+      { chars: CHARS_THRESHOLD, timeout: 3000, fullchunk: false },
+    )
+
+    writeLog(`[attachToSession] active for ${sid}`)
+
+    if (wasDeferred) {
+      wasDeferred = false
+      try {
+        await client.session.prompt({
+          path: { id: sid },
+          body: {
+            noReply: true,
+            parts: [{ type: "text", text: "[Voice] Earsay server listening..." }],
+          },
+        })
+        writeLog(`[attachToSession] notification injected`)
+      } catch (err) {
+        writeLog(`[attachToSession] notification failed: ${err}`)
+      }
+    }
+  })()
+
+  await attachPromise
+  attachPromise = null
+}
 
 async function injectNoReply(delta: string, textLen: number): Promise<void> {
   writeLog(`[inject] enter deltaLen=${delta.length} sessionID=${!!sessionID} lastInjected=${lastInjectedLength}`)
@@ -103,22 +175,6 @@ function onSSEEvent(event: { text?: string }): void {
   }
 }
 
-function setSessionID(sid: string | null): void {
-  if (sid === sessionID) return
-  writeLog(`[setSessionID] sid=${sid} was=${sessionID} accLen=${buffer.allText().length} lastInjected=${lastInjectedLength} lastTrigger=${lastTriggerTextLength}`)
-  sessionID = sid
-  if (!sid) return
-  const text = buffer.allText()
-  const needsInject = text.length > lastInjectedLength
-  const delta = needsInject ? text.slice(lastInjectedLength) : ""
-  writeLog(`[setSessionID] needsInject=${needsInject} deltaLen=${delta.length} textLen=${text.length}`)
-  if (delta.length > 0) {
-    injectNoReply(delta, text.length).then(() => checkTrigger(text))
-  } else {
-    checkTrigger(text)
-  }
-}
-
 export const OpencodeEarsayPlugin: Plugin = async ({ client: c }) => {
   client = c
 
@@ -131,28 +187,28 @@ export const OpencodeEarsayPlugin: Plugin = async ({ client: c }) => {
       if (AUTO_START) {
         const ok = await earsay.start()
         if (ok) {
-          sse.subscribe(
-            earsay.baseUrl,
-            onSSEEvent,
-            (err) => writeLog(`SSE error: ${err.message}`),
-            { chars: CHARS_THRESHOLD, timeout: 3000, fullchunk: false },
-          )
-          writeLog("active")
+          writeLog("server active")
+          if (sessionID && !activeSession) {
+            writeLog(`[init] activating deferred session ${sessionID}`)
+            await attachToSession(sessionID)
+          }
         }
       }
 
-      try {
-        const sessions: any = await Promise.race([
-          client.session.list(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
-        ])
-        const list = Array.isArray(sessions) ? sessions : sessions?.data ?? []
-        if (list.length > 0) {
-          const latest = list[list.length - 1]
-          if (latest?.id) setSessionID(latest.id)
+      if (!sessionID) {
+        try {
+          const sessions: any = await Promise.race([
+            client.session.list(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+          ])
+          const list = Array.isArray(sessions) ? sessions : sessions?.data ?? []
+          if (list.length > 0) {
+            const latest = list[list.length - 1]
+            if (latest?.id) await attachToSession(latest.id)
+          }
+        } catch {
+          // event hook will pick it up
         }
-      } catch {
-        // event hook will pick it up
       }
     } catch (err) {
       writeLog(`init error (plugin continues): ${err}`)
@@ -162,10 +218,11 @@ export const OpencodeEarsayPlugin: Plugin = async ({ client: c }) => {
   return {
     tool: createTools({ earsay, buffer, sse, onSSEEvent }),
     event: async ({ event }: { event: { type: string; properties: Record<string, unknown> } }) => {
-      const sid = (event.properties as any)?.info?.id ?? (event.properties as any)?.id
-      if (sid && (event.type === "session.created" || event.type === "session.updated")) {
-        setSessionID(sid as string)
-      }
+      if (event.type !== "session.created" && event.type !== "session.updated") return
+      const info = (event.properties as any)?.info as { id?: string; parentID?: string } | undefined
+      if (!info?.id) return
+      if (info.parentID) return
+      await attachToSession(info.id)
     },
   }
 }
