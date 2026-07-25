@@ -12,12 +12,12 @@ description: >
 ## Automatic Behavior
 
 On plugin load:
-1. earsay auto-installed if missing (pipx → pip3 → pip)
+1. earsay auto-installed if missing (uv → pipx → manual instructions shown)
 2. earsay server auto-starts on port 3009
 3. SSE subscription (delta mode, 30 chars / 3s timeout) begins immediately
 4. `[Voice]:` text is injected into session context as `noReply` messages
-5. After 3 text events (~9s speech) or 3 silence events (~9s pause after speech),
-   a trigger prompt is sent to the LLM
+5. On each tick (1s), if new text has arrived AND 3+ events accumulated (text or silence),
+   a trigger prompt is sent to the LLM with the `[Voice]:` context
 
 ## What the LLM Sees
 
@@ -74,9 +74,15 @@ User must TYPE to resume — do NOT call `voice_resume` autonomously.
 | Tool | Purpose |
 |------|---------|
 | `voice_get_progressive` | Get current accumulated text + counters |
-| `voice_cut_checkpoint(N)` | Claim first N chars as actionable |
+| `voice_cut_checkpoint(N)` | Claim first N chars as actionable prompt |
 | `voice_clear_checkpoint` | Undo last cut |
 | `voice_consume_all` | Consume all text at once |
-| `voice_pause` / `voice_resume` | Mic control |
-| `voice_start` / `voice_stop` | Server lifecycle |
-| `voice_status` | Server + buffer state |
+| `voice_pause` | Pause mic (user must type to resume) |
+| `voice_resume` | Resume mic (only when user types it) |
+| `voice_start` | Start server (auto-started on load) |
+| `voice_stop` | Kill server entirely |
+| `voice_subscribe` | Reconnect SSE stream |
+| `voice_unsubscribe` | Stop buffer updates |
+| `voice_uninstall` | Remove plugin + optionally earsay |
+| `voice_uninstall_confirm` | Confirm and execute full removal |
+| `voice_status` | Server + buffer + SSE state |
