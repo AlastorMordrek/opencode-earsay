@@ -60,8 +60,8 @@ export class ContextInjector {
 
     // trigger on 3 consecutive text events, or 3 silence events with unharvested text
     const shouldTrigger =
-      textEvents >= TRIGGER_TEXT_EVENTS ||
-      (deadEvents >= TRIGGER_SILENCE_EVENTS && text.length > this.lastTriggerTextLength)
+      text.length > this.lastTriggerTextLength &&
+      (textEvents >= TRIGGER_TEXT_EVENTS || deadEvents >= TRIGGER_SILENCE_EVENTS)
 
     if (shouldTrigger) {
       writeLog(`triggering LLM (textEvents=${textEvents}, deadEvents=${deadEvents}, textLen=${text.length})`)

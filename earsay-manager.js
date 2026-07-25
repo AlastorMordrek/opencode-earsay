@@ -1,0 +1,153 @@
+import { spawn } from "node:child_process";
+import { which, writeLog } from "./util";
+export class EarsayManager {
+    proc = null;
+    port;
+    model;
+    running = false;
+    constructor(opts) {
+        this.port = opts.port;
+        this.model = opts.model ?? "tiny.en";
+    }
+    get baseUrl() {
+        return `http://127.0.0.1:${this.port}`;
+    }
+    get isRunning() {
+        return this.running;
+    }
+    async start() {
+        if (this.running)
+            return true;
+        // If something responds on the port, kill it first (stale server)
+        if (await this.ping()) {
+            writeLog("existing server on port, stopping before restart");
+            await this.api("POST", "/stop").catch(() => { });
+            for (let i = 0; i < 30; i++) {
+                await sleep(1000);
+                if (!(await this.ping()))
+                    break;
+            }
+        }
+        const bin = which("earsay");
+        if (!bin) {
+            writeLog("earsay binary not found. Install: pip install earsay");
+            return false;
+        }
+        const proc = spawn(bin, ["listen", "--port", String(this.port), "--model", this.model], {
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+        this.proc = proc;
+        proc.unref();
+        const relayStderr = async () => {
+            const stderr = proc.stderr;
+            if (!stderr)
+                return;
+            const decoder = new TextDecoder();
+            try {
+                for await (const chunk of stderr) {
+                    const text = decoder.decode(chunk, { stream: true });
+                    for (const line of text.split("\n").filter(Boolean)) {
+                        writeLog(`[stderr] ${line.trimEnd()}`);
+                    }
+                }
+            }
+            catch {
+                // stderr stream ended
+            }
+        };
+        relayStderr();
+        const maxRetries = 90;
+        const intervalMs = 1000;
+        for (let i = 0; i < maxRetries; i++) {
+            await sleep(intervalMs);
+            if (await this.ping()) {
+                this.running = true;
+                writeLog(`server ready on port ${this.port}`);
+                return true;
+            }
+            if (this.proc && proc.exitCode !== null) {
+                writeLog(`process exited early with code ${proc.exitCode}`);
+                return false;
+            }
+        }
+        writeLog("server did not respond within 90s");
+        return false;
+    }
+    async stop() {
+        if (!this.running)
+            return;
+        await this.api("POST", "/stop").catch(() => { });
+        if (this.proc) {
+            const p = this.proc;
+            p.kill();
+            await new Promise((resolve) => {
+                p.once("close", () => resolve());
+                setTimeout(() => resolve(), 2000);
+            }).catch(() => { });
+            this.proc = null;
+        }
+        this.running = false;
+    }
+    async pause() {
+        const res = await this.api("POST", "/pause");
+        return res?.status === "paused";
+    }
+    async resume() {
+        const res = await this.api("POST", "/resume");
+        return res?.status === "listening";
+    }
+    async status() {
+        try {
+            const res = await this.api("GET", "/status");
+            if (!res)
+                return null;
+            return { ...res, port: this.port };
+        }
+        catch {
+            return null;
+        }
+    }
+    async setCheckpoint(absolutePos) {
+        const res = await this.api("POST", `/checkpoint?at=${absolutePos}`);
+        return res !== null;
+    }
+    async ensureRunning() {
+        if (this.running)
+            return true;
+        return this.start();
+    }
+    destroy() {
+        if (this.proc) {
+            this.proc.kill();
+            this.proc = null;
+        }
+        this.running = false;
+    }
+    async ping() {
+        try {
+            const res = await fetch(`${this.baseUrl}/status`, { signal: AbortSignal.timeout(2000) });
+            return res.ok;
+        }
+        catch {
+            return false;
+        }
+    }
+    async api(method, path) {
+        try {
+            const res = await fetch(`${this.baseUrl}${path}`, {
+                method,
+                signal: AbortSignal.timeout(5000),
+            });
+            if (!res.ok)
+                return null;
+            return (await res.json());
+        }
+        catch {
+            return null;
+        }
+    }
+}
+function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+//# sourceMappingURL=earsay-manager.js.map
