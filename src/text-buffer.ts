@@ -1,3 +1,5 @@
+import { writeLog } from "./util"
+
 export interface ProgressiveResult {
   text: string
   deadEvents: number
@@ -11,15 +13,18 @@ export class TextBuffer {
   private deadEvents = 0
   private textEvents = 0
   private earsayCheckpointPos = 0
+  private logLabel = "[buffer]"
 
   onEvent(delta: string): void {
     if (delta.length > 0) {
       this.accumulated += delta
       this.textEvents++
       this.deadEvents = 0
+      writeLog(`${this.logLabel} onEvent text deltaLen=${delta.length} accLen=${this.accumulated.length} textEv=${this.textEvents} deadEv=${this.deadEvents}`)
     } else {
       this.deadEvents++
       this.textEvents = 0
+      writeLog(`${this.logLabel} onEvent empty deadEv=${this.deadEvents} textEv=${this.textEvents}`)
     }
   }
 
@@ -59,6 +64,7 @@ export class TextBuffer {
   }
 
   resetCounters(): void {
+    writeLog(`${this.logLabel} resetCounters deadEv=${this.deadEvents} textEv=${this.textEvents}`)
     this.deadEvents = 0
     this.textEvents = 0
   }

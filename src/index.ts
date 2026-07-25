@@ -23,8 +23,12 @@ let lastInjectedLength = 0
 let lastTriggerTextLength = 0
 let client: any = null
 
-async function injectNoReply(delta: string): Promise<void> {
-  if (!sessionID) return
+async function injectNoReply(delta: string, textLen: number): Promise<void> {
+  writeLog(`[inject] enter deltaLen=${delta.length} sessionID=${!!sessionID} lastInjected=${lastInjectedLength}`)
+  if (!sessionID) {
+    writeLog(`[inject] skip — no session`)
+    return
+  }
   try {
     await client.session.prompt({
       path: { id: sessionID },
@@ -33,14 +37,19 @@ async function injectNoReply(delta: string): Promise<void> {
         parts: [{ type: "text", text: `[Voice]: ${delta}` }],
       },
     })
-    writeLog(`injected ${delta.length} chars`)
+    lastInjectedLength = textLen
+    writeLog(`[inject] success deltaLen=${delta.length} lastInjected=${lastInjectedLength}`)
   } catch (err) {
-    writeLog(`injectNoReply failed: ${err}`)
+    writeLog(`[inject] failed: ${err}`)
   }
 }
 
-async function triggerLLM(): Promise<void> {
-  if (!sessionID) return
+async function triggerLLM(textLength?: number): Promise<void> {
+  writeLog(`[trigger] enter sessionID=${!!sessionID} textLen=${textLength} lastTrigger=${lastTriggerTextLength}`)
+  if (!sessionID) {
+    writeLog(`[trigger] skip — no session`)
+    return
+  }
   try {
     await client.session.prompt({
       path: { id: sessionID },
@@ -48,21 +57,29 @@ async function triggerLLM(): Promise<void> {
         parts: [{ type: "text", text: "" }],
       },
     })
-    writeLog(`triggered LLM`)
+    if (textLength !== undefined) {
+      lastTriggerTextLength = textLength
+      buffer.resetCounters()
+    }
+    writeLog(`[trigger] success lastTrigger=${lastTriggerTextLength}`)
   } catch (err) {
-    writeLog(`triggerLLM failed: ${err}`)
+    writeLog(`[trigger] failed: ${err}`)
   }
 }
 
 function checkTrigger(text: string): void {
   const prog = buffer.getProgressive()
-  if (
-    text.length > lastTriggerTextLength &&
-    (prog.textEvents >= TRIGGER_TEXT_EVENTS || prog.deadEvents >= TRIGGER_SILENCE_EVENTS)
-  ) {
-    lastTriggerTextLength = text.length
-    buffer.resetCounters()
-    triggerLLM()
+  const condTextGrown = text.length > lastTriggerTextLength
+  const condTextEv = prog.textEvents >= TRIGGER_TEXT_EVENTS
+  const condDeadEv = prog.deadEvents >= TRIGGER_SILENCE_EVENTS
+  writeLog(
+    `[checkTrigger] textLen=${text.length} lastTrigger=${lastTriggerTextLength} ` +
+    `textEv=${prog.textEvents} deadEv=${prog.deadEvents} ` +
+    `grown=${condTextGrown} textOk=${condTextEv} deadOk=${condDeadEv} ` +
+    `fire=${condTextGrown && (condTextEv || condDeadEv)}`,
+  )
+  if (condTextGrown && (condTextEv || condDeadEv)) {
+    triggerLLM(text.length)
   }
 }
 
@@ -73,23 +90,29 @@ function onSSEEvent(event: { text?: string }): void {
   const needsInject = text.length > lastInjectedLength
   const delta = needsInject ? text.slice(lastInjectedLength) : ""
 
+  writeLog(
+    `[onSSEEvent] eventTextLen=${(event.text || "").length} ` +
+    `accLen=${text.length} needsInject=${needsInject} deltaLen=${delta.length} ` +
+    `lastInjected=${lastInjectedLength} lastTrigger=${lastTriggerTextLength} sessionID=${!!sessionID}`,
+  )
+
   if (needsInject && delta.length > 0) {
-    lastInjectedLength = text.length
-    injectNoReply(delta).then(() => checkTrigger(text))
+    injectNoReply(delta, text.length).then(() => checkTrigger(text))
   } else {
     checkTrigger(text)
   }
 }
 
 function setSessionID(sid: string | null): void {
+  writeLog(`[setSessionID] sid=${sid} was=${sessionID} accLen=${buffer.allText().length} lastInjected=${lastInjectedLength} lastTrigger=${lastTriggerTextLength}`)
   sessionID = sid
   if (!sid) return
   const text = buffer.allText()
   const needsInject = text.length > lastInjectedLength
   const delta = needsInject ? text.slice(lastInjectedLength) : ""
+  writeLog(`[setSessionID] needsInject=${needsInject} deltaLen=${delta.length} textLen=${text.length}`)
   if (delta.length > 0) {
-    lastInjectedLength = text.length
-    injectNoReply(delta).then(() => checkTrigger(text))
+    injectNoReply(delta, text.length).then(() => checkTrigger(text))
   } else {
     checkTrigger(text)
   }
