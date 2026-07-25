@@ -2,3 +2,13 @@ node_modules/
 dist/
 *.tsbuildinfo
 .env
+
+# Compiled JS at root level
+/*.js
+/*.d.ts
+/*.js.map
+
+# Compiled JS at root level
+/*.js
+/*.d.ts
+/*.js.map
