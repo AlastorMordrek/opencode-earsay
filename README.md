@@ -83,10 +83,12 @@ Edit `~/.config/opencode/opencode.jsonc` and add the skill line to the
 Nothing to start. Once opencode restarts, the plugin is live.
 
 - **Speak** — the plugin transcribes and injects `[Voice]:` text into the
-  session context as `noReply` messages.
-- **LLM triggers** — after enough speech arrives, the LLM is woken up with
-  the accumulated voice text in context. It decides whether the user said
-  something actionable or needs to keep talking.
+  session context as `noReply` messages. The server splits utterances into
+  30-character chunks (configurable via `EARSAY_CHARS_THRESHOLD`), so
+  injections fire at ~90-character intervals during continuous speech.
+- **LLM triggers** — after 3 text events (~90 chars) arrive, or after 5
+  seconds of silence (1 silence event), the LLM is woken up with the
+  accumulated voice text in context.
 - **Stop listening** — say "stop listening". The LLM calls `voice_pause`.
   The microphone is released and events freeze.
 - **Resume listening** — type a resume command. The mic was paused so you
@@ -113,11 +115,14 @@ checkpoint operations that let the LLM mark portions as consumed.
 
 **Event handler** — fires immediately on each SSE event. If new text arrived,
 it injects a `[Voice]:` message into the session (as `noReply` so it doesn't
-visibly affect the TUI). When the text has grown AND enough events have
-accumulated (3 text events or 3 silence events), it triggers an LLM turn with
-an empty user prompt — the voice messages are already in context for the LLM
-to analyze. If speech starts before a session exists, text buffers until the
-session becomes available, then flushes in one shot.
+visibly affect the TUI). Events carry a `trigger` field (`"chars"` or
+`"timeout"`) so the buffer classifies them by why they fired, not by text
+content. When the text has grown AND enough events have accumulated (3 text
+events or 1 silence event), it triggers an LLM turn with an empty user
+prompt — the voice messages are already in context for the LLM to analyze.
+Text events accumulate across timeout boundaries so pauses between utterances
+don't reset the counter. If speech starts before a session exists, text
+buffers until the session becomes available, then flushes in one shot.
 
 The LLM sees the conversation history like this:
 

@@ -15,16 +15,18 @@ export class TextBuffer {
   private earsayCheckpointPos = 0
   private logLabel = "[buffer]"
 
-  onEvent(delta: string): void {
-    if (delta.length > 0) {
+  onEvent(delta: string, trigger: "chars" | "timeout"): void {
+    if (trigger === "chars") {
       this.accumulated += delta
       this.textEvents++
       this.deadEvents = 0
-      writeLog(`${this.logLabel} onEvent text deltaLen=${delta.length} accLen=${this.accumulated.length} textEv=${this.textEvents} deadEv=${this.deadEvents}`)
+      writeLog(`${this.logLabel} onEvent chars deltaLen=${delta.length} accLen=${this.accumulated.length} textEv=${this.textEvents} deadEv=${this.deadEvents}`)
     } else {
+      if (delta.length > 0) {
+        this.accumulated += delta
+      }
       this.deadEvents++
-      this.textEvents = 0
-      writeLog(`${this.logLabel} onEvent empty deadEv=${this.deadEvents} textEv=${this.textEvents}`)
+      writeLog(`${this.logLabel} onEvent timeout deltaLen=${delta.length} deadEv=${this.deadEvents} textEv=${this.textEvents} accLen=${this.accumulated.length}`)
     }
   }
 

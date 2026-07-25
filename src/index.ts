@@ -10,7 +10,7 @@ const EARSAY_PORT = parseInt(process.env.EARSAY_PORT ?? "3009", 10)
 const EARSAY_MODEL = process.env.EARSAY_MODEL ?? "tiny.en"
 const CHARS_THRESHOLD = parseInt(process.env.EARSAY_CHARS_THRESHOLD ?? "30", 10)
 const TRIGGER_TEXT_EVENTS = 3
-const TRIGGER_SILENCE_EVENTS = 3
+const TRIGGER_SILENCE_EVENTS = 1
 const AUTO_INSTALL = process.env.EARSAY_AUTO_INSTALL !== "false"
 const AUTO_START = process.env.EARSAY_AUTO_START !== "false"
 
@@ -69,7 +69,7 @@ async function attachToSession(sid: string): Promise<void> {
       earsay.baseUrl,
       onSSEEvent,
       (err) => writeLog(`SSE error: ${err.message}`),
-      { chars: CHARS_THRESHOLD, timeout: 3000, fullchunk: false },
+      { chars: CHARS_THRESHOLD, timeout: 5000, fullchunk: false },
     )
 
     writeLog(`[attachToSession] active for ${sid}`)
@@ -159,8 +159,9 @@ function checkTrigger(text: string): void {
   }
 }
 
-function onSSEEvent(event: { text?: string }): void {
-  buffer.onEvent(event.text || "")
+function onSSEEvent(event: { text?: string; trigger?: "chars" | "timeout" }): void {
+  const trigger = event.trigger ?? (event.text && event.text.length > 0 ? "chars" : "timeout")
+  buffer.onEvent(event.text || "", trigger)
   checkTrigger(buffer.allText())
 }
 

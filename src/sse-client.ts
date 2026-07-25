@@ -2,6 +2,7 @@ export interface SSEEvent {
   ticket?: string
   potential_index: number
   text: string
+  trigger: "chars" | "timeout"
 }
 
 export interface SSEClientOptions {
